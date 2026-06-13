@@ -8,7 +8,9 @@ info:
     изменения товара (US-CART-02): подписаться/отписаться от уведомлений
     о появлении товара в наличии и снижении цены, а также корзину покупателя
     (US-CART-03): CRUD позиций для гостя и авторизованного пользователя,
-    обогащение из B2B и merge гостевой корзины при логине.
+    обогащение из B2B и merge гостевой корзины при логине, а также баннеры
+    главной страницы (US-CART-04): публичный список активных баннеров с
+    фильтрацией по расписанию и приём CTR-событий (показы/клики).
   version: 0.1.0
 
 servers:
@@ -539,6 +541,84 @@ paths:
                 code: UNAUTHORIZED
                 message: "Missing or invalid Authorization header"
 
+  /catalog/banners:
+    get:
+      summary: Активные баннеры главной
+      description: >
+        Возвращает баннеры главной страницы (US-CART-04), отсортированные
+        по `ordering` (= `priority` модели) по возрастанию. В выдачу
+        попадают только баннеры с `is_active = true`, у которых текущее
+        время (UTC) лежит в окне расписания `active_from`..`active_to`
+        (любая из границ может быть пустой). Если активных баннеров нет —
+        `200` с пустым массивом.
+
+        Публичный эндпоинт: авторизация не требуется. Баннеры создаются и
+        редактируются только в Django Admin, не через API.
+      operationId: getBanners
+      tags:
+        - banners
+      security: []
+      responses:
+        "200":
+          description: Список активных баннеров (возможно пустой)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Banner"
+
+  /catalog/banner-events:
+    post:
+      summary: Записать CTR-события баннеров
+      description: >
+        Принимает батч событий показов (`impression`) и кликов (`click`)
+        по баннерам и сохраняет их в журнал `banner_events` для
+        CTR-аналитики. Батч — чтобы клиент мог отправить накопленные
+        события слайдера одним вызовом.
+
+        Все `banner_id` из событий должны существовать; если хотя бы один
+        неизвестен — `400 BANNER_NOT_FOUND`, и ни одно событие батча не
+        записывается. Авторизация не требуется; при наличии валидного
+        `Authorization: Bearer` событие сохраняется с `user_id` из JWT,
+        иначе — с `user_id = null`.
+      operationId: recordBannerEvents
+      tags:
+        - banners
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BannerEventsRequest"
+      responses:
+        "204":
+          description: События записаны
+        "400":
+          description: Пустой список событий или неизвестный `banner_id`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unknownBanner:
+                  value:
+                    code: BANNER_NOT_FOUND
+                    message: "Banner not found: <uuid>"
+                emptyEvents:
+                  value:
+                    code: EMPTY_EVENTS
+                    message: "Events list must not be empty"
+        "422":
+          description: Невалидное тело запроса (пустой `events` или неверный `event`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -737,6 +817,75 @@ components:
           type: string
         message:
           type: string
+
+    Banner:
+      type: object
+      description: >
+        Баннер главной страницы (US-CART-04). Поля `ordering` /
+        `active_from` / `active_to` соответствуют колонкам модели
+        `priority` / `start_at` / `end_at`.
+      required:
+        - id
+        - title
+        - image_url
+        - link
+        - ordering
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        image_url:
+          type: string
+        link:
+          type: string
+        ordering:
+          type: integer
+          description: Порядок в слайдере (по возрастанию, меньше — выше)
+        active_from:
+          type: string
+          format: date-time
+          nullable: true
+        active_to:
+          type: string
+          format: date-time
+          nullable: true
+
+    BannerEventType:
+      type: string
+      description: Тип CTR-события баннера
+      enum:
+        - impression
+        - click
+
+    BannerEventItem:
+      type: object
+      required:
+        - banner_id
+        - event
+        - timestamp
+      properties:
+        banner_id:
+          type: string
+          format: uuid
+        event:
+          $ref: "#/components/schemas/BannerEventType"
+        timestamp:
+          type: string
+          format: date-time
+
+    BannerEventsRequest:
+      type: object
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          minItems: 1
+          description: Батч CTR-событий (минимум одно)
+          items:
+            $ref: "#/components/schemas/BannerEventItem"
 
     CartItemAddRequest:
       type: object
