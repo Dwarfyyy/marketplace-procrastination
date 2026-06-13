@@ -125,3 +125,115 @@ middleware после проверки подписи JWT и активной с
   зафиксировано в `services/b2c/docs/US-CART-01.md`. Названия тестов
   адаптированы (`test_add_to_favorites_returns_204`,
   `test_repeat_add_returns_204_not_duplicate`), смысл сценариев сохранён.
+
+## B2C-7. Подписки на изменения товара {#b2c-7-subscriptions}
+
+### Контекст
+
+Товара нет в наличии — покупатель уходит, но хочет вернуться. Подписка
+"уведомить когда появится / когда подешевеет" удерживает намерение купить.
+В рамках MVP реализуется только инфраструктура: создание и удаление
+подписки. Фактическая отправка уведомлений (push/email при
+`BACK_IN_STOCK` / `PRICE_DROP`) — отдельный модуль и не входит в scope
+этого квеста; на этапе MVP подписка только сохраняется в БД.
+
+### Идентификация пользователя (IDOR-защита)
+
+Эндпоинты находятся под `Authorization: Bearer <token>` и закрыты той же
+middleware, что и "Избранное" (`PRIVATE_PATHS_PREFIXES` в
+`middlewares/token_verification.py`).
+
+`user_id` **всегда** берётся из `request.state.user_id`, заполненного
+middleware после проверки JWT и активной сессии в БД. `user_id`,
+переданный в query/body, **игнорируется** — иначе подписку можно было бы
+создать/удалить от имени другого пользователя (IDOR).
+
+Рассмотренные альтернативы — те же, что и для "Избранное" (см. ADR в
+`services/b2c/docs/US-CART-01.md` и `services/b2c/docs/US-CART-02.md`):
+
+- `user_id` в query/body — отклонено, IDOR;
+- заголовок `X-User-Id` — отклонено, подделывается клиентом без подписи;
+- `user_id` из проверенного JWT (middleware) — выбрано.
+
+### Хранение
+
+Таблица `subscriptions` (`id`, `user_id`, `product_id`, `notify_in_stock`,
+`notify_price_down`, `created_at`), уникальный индекс/constraint по
+`(user_id, product_id)` — повторная подписка на тот же товар не создаёт
+дубль и приводит к `409 CONFLICT`.
+
+Типы уведомлений (`notify_on` в задаче / `events` в реализации:
+`BACK_IN_STOCK`, `PRICE_DROP`) хранятся как два булевых флага в той же
+строке подписки, а не как отдельная таблица событий или JSON/ArrayField —
+см. ADR в `services/b2c/docs/US-CART-02.md`.
+
+Отправка уведомлений (вне scope) предполагается отдельным
+воркером/очередью, который читает `subscriptions` по `notify_in_stock` /
+`notify_price_down` — заготовка под это не входит в текущую реализацию.
+
+### Эндпоинты
+
+`POST /api/v1/favorites/{product_id}/subscribe`
+
+Создаёт подписку текущего пользователя на товар `{product_id}`. Тело
+запроса — список типов уведомлений (`notify_on` / `events`):
+`["BACK_IN_STOCK", "PRICE_DROP"]`.
+
+`DELETE /api/v1/favorites/{product_id}/subscribe`
+
+Удаляет подписку текущего пользователя на товар `{product_id}`.
+
+### Алгоритм
+
+1. **`POST /favorites/{product_id}/subscribe`**:
+   - если список типов уведомлений пуст или содержит недопустимое
+     значение — `400`/`422 INVALID_NOTIFY_ON`;
+   - если товар с `{product_id}` не существует — `404 NOT_FOUND`;
+   - если подписка `(user_id, product_id)` уже существует — `409
+     SUBSCRIPTION_ALREADY_EXISTS`;
+   - иначе создать запись в `subscriptions` и вернуть `201`/`204`.
+2. **`DELETE /favorites/{product_id}/subscribe`**: удалить запись
+   `(user_id, product_id)`, если она есть; вернуть `204`.
+
+### Edge cases
+
+- **Пустой/невалидный `notify_on`** → `400`/`422 INVALID_NOTIFY_ON`.
+- **Подписка на несуществующий товар** → `404 NOT_FOUND`.
+- **Повторная подписка на тот же товар** → `409
+  SUBSCRIPTION_ALREADY_EXISTS`, без дубля в БД.
+- **Без `Authorization`** → `401 UNAUTHORIZED`.
+- **`user_id` в query/body игнорируется** — используется только `user_id`
+  из JWT.
+- **Отправка уведомлений** — не реализуется в этом квесте; подписка только
+  сохраняется в `subscriptions`.
+
+### Сценарии (тесты)
+
+- `subscribe_returns_201_with_notify_on` *(в реализации —
+  `test_subscribe_returns_204`, см. примечание ниже)* — happy path:
+  подписка на товар создана.
+- `duplicate_subscription_returns_409` *(`test_duplicate_subscription_returns_409`)*
+  — повторная подписка на тот же товар → `409`.
+- `invalid_notify_on_returns_400` *(в реализации —
+  `test_empty_events_returns_400` / `test_invalid_events_returns_422`, см.
+  примечание ниже)* — пустой/невалидный `notify_on` → `400`/`422`.
+- `subscribe_to_unknown_product_returns_404`
+  *(`test_subscribe_to_unknown_product_returns_404`)* — подписка на
+  несуществующий товар → `404`.
+- `test_unsubscribe_returns_204` — отписка удаляет запись из
+  `subscriptions`.
+- `test_subscribe_no_auth_returns_401` — без `Authorization` → `401`.
+
+### Примечания
+
+- Поле из задачи называется `notify_on`, в реализации — `events`
+  (`SubscriptionEvent`: `BACK_IN_STOCK`, `PRICE_DROP`); смысл сценариев
+  сохранён, см. `services/b2c/docs/US-CART-02.md`.
+- Код успешного создания подписки в реализации — `204 No Content` (как и
+  для "Избранное"), а не `201` — единообразно с остальными мутирующими
+  эндпоинтами блока корзины/избранного.
+- Невалидный тип в `events` (не входящий в `SubscriptionEvent`) отклоняется
+  Pydantic-валидацией FastAPI и возвращает `422` с
+  `code: VALIDATION_ERROR`; пустой список `events: []` — кастомная
+  валидация в сервисе, `400 INVALID_NOTIFY_ON`. Оба случая соответствуют
+  канон-сценарию `invalid_notify_on_returns_400`.

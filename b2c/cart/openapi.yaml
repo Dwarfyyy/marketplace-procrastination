@@ -4,7 +4,9 @@ info:
   description: >
     OpenAPI-контракт для эндпоинтов корзины и избранного B2C-приложения.
     Описывает блок "Избранное" (US-CART-01): добавление, удаление и
-    список избранных товаров с обогащением из B2B.
+    список избранных товаров с обогащением из B2B, а также подписки на
+    изменения товара (US-CART-02): подписаться/отписаться от уведомлений
+    о появлении товара в наличии и снижении цены.
   version: 0.1.0
 
 servers:
@@ -130,6 +132,115 @@ paths:
                 code: UNAUTHORIZED
                 message: "Missing or invalid Authorization header"
 
+  /favorites/{product_id}/subscribe:
+    post:
+      summary: Подписаться на изменения товара
+      description: >
+        Создаёт подписку текущего пользователя на уведомления об изменениях
+        товара `{product_id}` (US-CART-02): появление в наличии
+        (`BACK_IN_STOCK`) и/или снижение цены (`PRICE_DROP`).
+
+        Отправка самих уведомлений — отдельный модуль и не входит в этот
+        контракт; эндпоинт только сохраняет подписку.
+
+        `user_id` определяется **только** из JWT, любой `user_id` в
+        query/body игнорируется (та же защита от IDOR, что и для
+        `/favorites`).
+      operationId: subscribeToProduct
+      tags:
+        - subscriptions
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscribeRequest"
+      responses:
+        "204":
+          description: Подписка создана
+        "400":
+          description: Пустой или невалидный `notify_on`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INVALID_NOTIFY_ON
+                message: "Events are required"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+        "404":
+          description: Товар не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Товар не найден"
+        "409":
+          description: Подписка на этот товар уже существует
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: SUBSCRIPTION_ALREADY_EXISTS
+                message: "Подписка на этот товар уже существует"
+        "422":
+          description: Невалидное значение `notify_on` (значение вне enum)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+    delete:
+      summary: Отписаться от изменений товара
+      description: >
+        Удаляет подписку текущего пользователя на товар `{product_id}`.
+        Идемпотентно: удаление отсутствующей подписки также возвращает
+        `204`.
+
+        `user_id` определяется **только** из JWT, любой `user_id` в
+        query/body игнорируется.
+      operationId: unsubscribeFromProduct
+      tags:
+        - subscriptions
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Подписка удалена (или не существовала)
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -139,9 +250,48 @@ components:
       description: >
         user_id извлекается из claims токена middleware'ом после проверки
         подписи и активной сессии. user_id из query/body не используется —
-        это защита от IDOR на список избранного.
+        это защита от IDOR на список избранного и подписки.
 
   schemas:
+    SubscriptionEvent:
+      type: string
+      description: >
+        Тип уведомления (`notify_on` в задаче US-CART-02): появление товара
+        в наличии или снижение цены.
+      enum:
+        - BACK_IN_STOCK
+        - PRICE_DROP
+
+    SubscribeRequest:
+      type: object
+      properties:
+        events:
+          type: array
+          description: Список типов уведомлений (`notify_on`)
+          items:
+            $ref: "#/components/schemas/SubscriptionEvent"
+          default:
+            - BACK_IN_STOCK
+            - PRICE_DROP
+
+    ValidationErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+        - details
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: "Request validation failed"
+        details:
+          type: array
+          items:
+            type: object
+
     ImageRef:
       type: object
       required:
