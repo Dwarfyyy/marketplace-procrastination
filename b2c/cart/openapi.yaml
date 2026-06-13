@@ -6,7 +6,9 @@ info:
     Описывает блок "Избранное" (US-CART-01): добавление, удаление и
     список избранных товаров с обогащением из B2B, а также подписки на
     изменения товара (US-CART-02): подписаться/отписаться от уведомлений
-    о появлении товара в наличии и снижении цены.
+    о появлении товара в наличии и снижении цены, а также корзину покупателя
+    (US-CART-03): CRUD позиций для гостя и авторизованного пользователя,
+    обогащение из B2B и merge гостевой корзины при логине.
   version: 0.1.0
 
 servers:
@@ -241,6 +243,302 @@ paths:
                 code: UNAUTHORIZED
                 message: "Missing or invalid Authorization header"
 
+  /cart:
+    get:
+      summary: Получить корзину
+      description: >
+        Возвращает корзину текущего пользователя (по `Authorization:
+        Bearer`) или гостя (по `X-Session-Id`), обогащённую текущими ценами,
+        остатками и причиной недоступности из B2B. Недоступные позиции
+        присутствуют в `items`, но не входят в `subtotal`.
+      operationId: getCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      responses:
+        "200":
+          description: Корзина
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization` либо `X-Session-Id` не UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: MISSING_CART_IDENTITY
+                message: "Provide Authorization or X-Session-Id header"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Invalid or expired token"
+    delete:
+      summary: Очистить корзину
+      description: Удаляет все позиции корзины текущего пользователя/гостя.
+      operationId: clearCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      responses:
+        "204":
+          description: Корзина очищена
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cart/items:
+    post:
+      summary: Добавить позицию в корзину
+      description: >
+        Добавляет SKU в корзину. Если SKU уже в корзине — `quantity`
+        увеличивается на переданное значение (а не заменяется). Резерв на
+        складе не создаётся (lazy reserve — только при checkout).
+      operationId: addCartItem
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CartItemAddRequest"
+      responses:
+        "200":
+          description: Обновлённая корзина
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: SKU не найден или недоступен для добавления
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "SKU with id ... not found"
+        "409":
+          description: Запрошенное количество больше доступного остатка
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INSUFFICIENT_STOCK
+                message: "Недостаточно остатков: доступно 3"
+        "422":
+          description: Невалидное тело запроса
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+
+  /cart/items/{sku_id}:
+    patch:
+      summary: Изменить количество позиции
+      description: Устанавливает абсолютное значение `quantity` для позиции корзины.
+      operationId: updateCartItemQuantity
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      parameters:
+        - name: sku_id
+          in: path
+          required: true
+          description: UUID SKU
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CartItemQuantityUpdate"
+      responses:
+        "200":
+          description: Обновлённая корзина
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "404":
+          description: Позиция/SKU не найден или SKU недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "SKU ... not in cart"
+        "409":
+          description: Запрошенное количество больше доступного остатка
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INSUFFICIENT_STOCK
+                message: "Not enough stock: available 3"
+        "422":
+          description: Невалидное тело запроса
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+    delete:
+      summary: Удалить позицию из корзины
+      description: Удаляет позицию `{sku_id}` из корзины текущего пользователя/гостя.
+      operationId: deleteCartItem
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      parameters:
+        - name: sku_id
+          in: path
+          required: true
+          description: UUID SKU
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Обновлённая корзина (без удалённой позиции)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "404":
+          description: Позиция не найдена в корзине
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "SKU ... not in cart"
+
+  /cart/validate:
+    post:
+      summary: Провалидировать корзину
+      description: >
+        Возвращает корзину и список проблем (`OUT_OF_STOCK`,
+        `PRODUCT_BLOCKED`, `PRODUCT_DELETED`, `QUANTITY_REDUCED`,
+        `PRICE_CHANGED`) без изменения данных корзины.
+      operationId: validateCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      responses:
+        "200":
+          description: Результат валидации
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartValidationResponse"
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cart/merge:
+    post:
+      summary: Слить гостевую корзину при логине
+      description: >
+        Переносит позиции гостевой корзины (`X-Session-Id`) в корзину
+        авторизованного пользователя. При конфликте по `sku_id` итоговое
+        `quantity = MAX(quantity_user, quantity_guest)` (без суммирования).
+        Требует одновременно `Authorization: Bearer` и `X-Session-Id`.
+      operationId: mergeGuestCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Session-Id
+          in: header
+          required: true
+          description: UUID гостевой сессии, корзина которой будет слита
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Слитая корзина пользователя
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "400":
+          description: Не передан `X-Session-Id`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: MISSING_SESSION_ID
+                message: "Header X-Session-Id is required"
+        "401":
+          description: Нет авторизации или невалидный токен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -251,6 +549,17 @@ components:
         user_id извлекается из claims токена middleware'ом после проверки
         подписи и активной сессии. user_id из query/body не используется —
         это защита от IDOR на список избранного и подписки.
+
+    sessionAuth:
+      type: apiKey
+      in: header
+      name: X-Session-Id
+      description: >
+        Идентификатор гостевой корзины (US-CART-03): UUID v4, генерируется
+        клиентом и передаётся в каждом запросе. Используется только когда
+        не передан `Authorization: Bearer` — в этом случае корзина
+        принадлежит пользователю (`user_id` из JWT), а `X-Session-Id`
+        игнорируется (кроме `/cart/merge`, где требуются оба).
 
   schemas:
     SubscriptionEvent:
@@ -428,3 +737,169 @@ components:
           type: string
         message:
           type: string
+
+    CartItemAddRequest:
+      type: object
+      required:
+        - sku_id
+        - quantity
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+
+    CartItemQuantityUpdate:
+      type: object
+      required:
+        - quantity
+      properties:
+        quantity:
+          type: integer
+          minimum: 1
+
+    CartItem:
+      type: object
+      required:
+        - sku_id
+        - product_id
+        - name
+        - sku_code
+        - quantity
+        - unit_price
+        - line_total
+        - available_quantity
+        - is_available
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        sku_code:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          type: integer
+          description: Текущая цена SKU, пересчитывается из B2B при каждом обращении
+        unit_price_at_add:
+          type: integer
+          nullable: true
+          description: >
+            Цена SKU на момент добавления в корзину. Используется только
+            для сравнения в `cart/validate` (`PRICE_CHANGED`), не как цена
+            позиции.
+        line_total:
+          type: integer
+          description: "`unit_price * quantity`, `0` если позиция недоступна"
+        available_quantity:
+          type: integer
+          minimum: 0
+        is_available:
+          type: boolean
+          description: >
+            Вычисляется при каждом обогащении из B2B (не хранится в БД):
+            `false`, если товар удалён/заблокирован/на модерации либо
+            `available_quantity <= 0`.
+        unavailable_reason:
+          type: string
+          nullable: true
+          enum:
+            - PRODUCT_DELETED
+            - PRODUCT_BLOCKED
+            - ON_MODERATION
+            - OUT_OF_STOCK
+          description: Причина недоступности, вычисляется заново при каждом ответе
+        image:
+          allOf:
+            - $ref: "#/components/schemas/ImageRef"
+          nullable: true
+
+    CartResponse:
+      type: object
+      required:
+        - items
+        - items_count
+        - subtotal
+        - is_valid
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartItem"
+        items_count:
+          type: integer
+          minimum: 0
+          description: Суммарное количество единиц товара по всем позициям
+        subtotal:
+          type: integer
+          description: >
+            Сумма `line_total` только по доступным позициям; недоступные
+            позиции присутствуют в `items`, но не входят в `subtotal`
+        is_valid:
+          type: boolean
+          description: >
+            `false`, если хотя бы одна позиция недоступна или её
+            `quantity` превышает `available_quantity`
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CartValidationIssue:
+      type: object
+      required:
+        - sku_id
+        - type
+        - message
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - PRICE_CHANGED
+            - OUT_OF_STOCK
+            - QUANTITY_REDUCED
+            - PRODUCT_BLOCKED
+            - PRODUCT_DELETED
+        message:
+          type: string
+        old_value:
+          nullable: true
+          oneOf:
+            - type: string
+            - type: integer
+        new_value:
+          nullable: true
+          oneOf:
+            - type: string
+            - type: integer
+
+    CartValidationResponse:
+      type: object
+      required:
+        - is_valid
+        - cart
+        - issues
+      properties:
+        is_valid:
+          type: boolean
+        cart:
+          $ref: "#/components/schemas/CartResponse"
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartValidationIssue"
