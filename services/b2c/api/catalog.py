@@ -8,6 +8,7 @@ from fastapi import Request
 import json
 
 from exceptions.banner import BannerNotFoundError, EmptyEventsError
+from exceptions.collection import CollectionNotFoundError
 from exceptions.product import ProductNotFoundError
 from schemas.banner import Banner, BannerEventsRequest
 from schemas.catalog import CatalogProductCard, CategoryRef, CategoryTreeNode
@@ -16,7 +17,7 @@ from exceptions.category import CategoryNotFoundError
 from core import db
 
 
-from schemas.collection import Collection
+from schemas.collection import CollectionProducts, CollectionSummary
 from services import (
 	banner_service,
 	category_service,
@@ -171,11 +172,31 @@ async def get_facets(
 		) from e
 
 
-@router.get("/collections", response_model=list[Collection])
+@router.get("/collections", response_model=list[CollectionSummary])
 async def get_collections(
 	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
-) -> list[Collection]:
-	return await collection_service.get_catalog_collections(db)
+) -> list[CollectionSummary]:
+	"""List active collections (metadata only, without products)."""
+	return await collection_service.get_collection_summaries(db)
+
+
+@router.get("/collections/{collection_id}", response_model=CollectionProducts)
+async def get_collection_products(
+	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
+	collection_id: uuid.UUID,
+) -> CollectionProducts:
+	"""Products of a single collection, batch-enriched from B2B.
+
+	Unavailable products go to ``unavailable_ids`` (not an error); an unknown
+	collection yields ``404``.
+	"""
+	try:
+		return await collection_service.get_collection_products(db, collection_id)
+	except CollectionNotFoundError as e:
+		raise fastapi.HTTPException(
+			status_code=404,
+			detail={"code": "NOT_FOUND", "message": str(e)},
+		) from e
 
 
 @router.get("/banners")
