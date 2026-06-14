@@ -1,15 +1,13 @@
-import json
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated
 
 import fastapi
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import db
 from exceptions.product import ProductNotFoundError
 from exceptions.sku import SkuNotFoundError
-from schemas.product import Product, ProductShortListResponse
+from schemas.product import Product
 from schemas.sku import Sku as SkuSchema, SkuShort as SkuShortSchema
 from services import product_service, sku_service
 

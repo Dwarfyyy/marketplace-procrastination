@@ -1,5 +1,4 @@
 import uuid
-from collections import defaultdict
 from datetime import date
 from typing import Sequence
 
@@ -56,26 +55,37 @@ async def count_active_collections(db: AsyncSession) -> int:
 	return result.scalar() or 0
 
 
-async def get_product_ids_by_collection_ids(
-	db: AsyncSession, collection_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, list[uuid.UUID]]:
-	if not collection_ids:
-		return {}
+async def get_active_collection_by_id(
+	db: AsyncSession, collection_id: uuid.UUID
+) -> Collection | None:
+	"""Получить активную подборку по id (или None, если её нет / неактивна)."""
+	today = date.today()
 
-	query = (
-		select(CollectionProduct.collection_id, CollectionProduct.product_id)
-		.where(
-			CollectionProduct.collection_id.in_(collection_ids),
-			CollectionProduct.product_id.in_(_moderated_available_product_ids()),
-		)
-		.order_by(CollectionProduct.collection_id, CollectionProduct.product_id)
+	query = select(Collection).where(
+		Collection.id == collection_id,
+		Collection.is_active == True,  # noqa: E712
+		(Collection.start_date <= today) | (Collection.start_date.is_(None)),
 	)
 	result = await db.execute(query)
+	return result.scalar_one_or_none()
 
-	grouped: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
-	for collection_id, product_id in result.all():
-		grouped[collection_id].append(product_id)
-	return dict(grouped)
+
+async def get_collection_product_ids(
+	db: AsyncSession, collection_id: uuid.UUID
+) -> list[uuid.UUID]:
+	"""Все UUID товаров, привязанных к подборке (без фильтра доступности).
+
+	B2C хранит только связь подборка→UUID; актуальность товара определяется
+	позже обогащением из B2B. Поэтому здесь возвращаются все привязанные id,
+	а недоступные затем уходят в `unavailable_ids`.
+	"""
+	query = (
+		select(CollectionProduct.product_id)
+		.where(CollectionProduct.collection_id == collection_id)
+		.order_by(CollectionProduct.product_id)
+	)
+	result = await db.execute(query)
+	return [product_id for (product_id,) in result.all()]
 
 
 async def get_available_catalog_products_by_ids(

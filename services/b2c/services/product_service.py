@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import Optional, List
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,15 +9,12 @@ import crud.category as category_crud
 import crud.review as review_crud
 from database.models import Sku
 from exceptions.product import ProductNotFoundError
-from schemas.catalog import CatalogProductCard
+from schemas.catalog import CatalogProductCard, PaginatedCatalogProducts
 from schemas.product import (
-	ProductShort,
 	Product,
-	ProductShortListResponse,
 )
 from services.schemas_builder import build_catalog_product_cards
 from schemas.sku import SkuShort
-from schemas.sku import Sku as SkuSchema
 from schemas.image import Image
 
 
@@ -70,15 +67,13 @@ async def get_products_list(
 	filters_json: Optional[str],
 	sort: str,
 	search: Optional[str],
-) -> ProductShortListResponse:
+) -> PaginatedCatalogProducts:
 	# Валидация sort согласно спецификации
 	valid_sorts = [
-		"rating",
-		"popularity",
 		"price_asc",
 		"price_desc",
-		"date_desc",
-		"discount_desc",
+		"popularity",
+		"new",
 	]
 	if sort not in valid_sorts:
 		raise ValueError(f"Invalid sort parameter. Allowed: {', '.join(valid_sorts)}")
@@ -99,26 +94,15 @@ async def get_products_list(
 		db, limit, offset, cat_uuid, filter, sort, search
 	)
 
-	items = []
-	for p in products:
-		main_image_url = p.images[0].url if p.images else ""
+	categories_map = await category_crud.get_all_categories_map(db)
+	review_stats_by_product = await review_crud.get_reviews_stats_by_product_ids(
+		db, [product.id for product in products]
+	)
+	items = build_catalog_product_cards(
+		products, categories_map, review_stats_by_product
+	)
 
-		# SKU is used to determine price
-		skus: List[SkuSchema] = await product_crud.get_product_skus(db, p.id)
-		price = min((sku.price for sku in skus), default=0.0) if skus else 0.0
-
-		items.append(
-			ProductShort(
-				id=p.id,
-				title=p.title,
-				image=main_image_url,
-				price=float(price),
-				in_stock=False,
-				is_in_cart=False,
-			)
-		)
-
-	return ProductShortListResponse(
+	return PaginatedCatalogProducts(
 		items=items, total_count=total_count, limit=limit, offset=offset
 	)
 
