@@ -10,7 +10,12 @@ import json
 from exceptions.banner import BannerNotFoundError, EmptyEventsError
 from exceptions.product import ProductNotFoundError
 from schemas.banner import Banner, BannerEventsRequest
-from schemas.catalog import CatalogProductCard, CategoryRef, CategoryTreeNode
+from schemas.catalog import (
+	CatalogProductCard,
+	CatalogProductDetail,
+	CategoryRef,
+	CategoryTreeNode,
+)
 from schemas.category import CategoryInfoResponse, FacetsResponse, FilterResponse
 from exceptions.category import CategoryNotFoundError
 from core import db
@@ -213,6 +218,31 @@ async def post_banner_events(
 			detail={"code": "BANNER_NOT_FOUND", "message": str(e)},
 		) from e
 	return fastapi.Response(status_code=204)
+
+
+@router.get("/products/{product_id}", response_model=CatalogProductDetail)
+async def get_catalog_product_api(
+	db: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
+	product_id: uuid.UUID,
+) -> CatalogProductDetail:
+	"""Get a buyer-facing product card with nested SKUs by product id.
+
+	Args:
+		db (Annotated[AsyncSession, fastapi.Depends]): Database session
+		product_id (uuid.UUID): Product ID
+
+	Returns:
+		CatalogProductDetail: Product detail card
+	"""
+	try:
+		return await product_service.get_product_by_id(db, product_id)
+	except ProductNotFoundError as err:
+		raise fastapi.HTTPException(
+			status_code=404,
+			detail={"code": "NOT_FOUND", "message": str(err)},
+		) from err
+	except Exception as e:
+		raise fastapi.HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get(

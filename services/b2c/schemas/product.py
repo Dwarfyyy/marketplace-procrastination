@@ -1,13 +1,12 @@
 import uuid
-from typing import Any, List
+from typing import List
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from database.models import ProductStatusEnum
 from schemas.category import CategoryInFavorite
-from schemas.characteristic import Characteristic, CharacteristicInFavorite
+from schemas.characteristic import CharacteristicInFavorite
 from schemas.image import ImageInFavorite
-from schemas.sku import Sku, SkuInFavorite
+from schemas.sku import SkuInFavorite
 
 
 class ProductShort(BaseModel):
@@ -18,23 +17,6 @@ class ProductShort(BaseModel):
 	in_stock: bool
 	is_in_cart: bool
 	model_config = ConfigDict(from_attributes=True)
-
-
-class Product(BaseModel):
-	id: uuid.UUID
-	slug: str
-	title: str
-	description: str
-	images: List[str]
-	status: ProductStatusEnum
-	characteristics: List[Characteristic]
-	skus: List[Sku]
-	model_config = ConfigDict(from_attributes=True)
-
-	@field_validator("images", mode="before")
-	@classmethod
-	def _extract_image_urls(cls, value: Any) -> Any:
-		return [item.url if hasattr(item, "url") else item for item in value]
 
 
 class ProductShortListResponse(BaseModel):

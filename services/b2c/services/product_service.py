@@ -9,13 +9,15 @@ import crud.category as category_crud
 import crud.review as review_crud
 from database.models import Sku
 from exceptions.product import ProductNotFoundError
-from schemas.catalog import CatalogProductCard
+from schemas.catalog import CatalogProductCard, CatalogProductDetail
 from schemas.product import (
 	ProductShort,
-	Product,
 	ProductShortListResponse,
 )
-from services.schemas_builder import build_catalog_product_cards
+from services.schemas_builder import (
+	build_catalog_product_cards,
+	build_catalog_product_detail,
+)
 from schemas.sku import SkuShort
 from schemas.sku import Sku as SkuSchema
 from schemas.image import Image
@@ -123,11 +125,11 @@ async def get_products_list(
 	)
 
 
-async def get_product_by_id(db: AsyncSession, id: uuid.UUID) -> Product:
+async def get_product_by_id(db: AsyncSession, id: uuid.UUID) -> CatalogProductDetail:
 	product = await product_crud.get_product_full(db, id)
 	if not product:
 		raise ProductNotFoundError("Product not found")
-	return Product.model_validate(product)
+	return build_catalog_product_detail(product)
 
 
 async def get_similar_products(
