@@ -157,7 +157,11 @@ async def get_products_list(
 async def get_product_full(db: AsyncSession, id: uuid.UUID) -> Optional[Product]:
 	stmt = (
 		select(Product)
-		.where(Product.id == id)
+		.where(
+			Product.id == id,
+			Product.status == ProductStatusEnum.MODERATED,
+			Product.deleted == False,  # noqa: E712
+		)
 		.options(
 			selectinload(Product.images),
 			selectinload(Product.characteristics),

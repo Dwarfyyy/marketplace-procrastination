@@ -22,6 +22,22 @@ async def test_product_card_returns_full_data_with_skus(
 	assert body["description"] == product.description
 	assert body["images"] == [image.url for image in product.images]
 	assert [item["name"] for item in body["skus"]] == [sku.name for sku in skus]
+	for item, sku in zip(body["skus"], skus):
+		assert item["discount"] == sku.discount
+		assert item["in_stock"] is (sku.active_quantity > 0)
+
+
+async def test_cost_price_absent_in_response(
+	client: AsyncClient,
+	products_data: ProductData,
+) -> None:
+	product = products_data.base_product
+	response = await client.get(f"/api/v1/products/{product.id}")
+
+	assert response.status_code == 200
+	body = response.json()
+	assert "cost_price" not in body["skus"][0]
+	assert "reserved_quantity" not in body["skus"][0]
 
 
 async def test_blocked_product_returns_404(

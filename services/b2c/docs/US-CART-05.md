@@ -2,15 +2,29 @@
 
 ## Что сделано
 
-Тематические подборки для главной страницы. 
-Данные каталога читаются из локальной БД B2C, без отдельного обращения к B2B - это архитектурное решение - хранить данные в B2C и через очередь сообщений управлять обновлениями данных в сервисах.
-Реализован единственный метод работы с коллекциями, представленный в спецификации OpenAPI, - `GET /api/v1/catalog/collections`
+Тематические подборки для главной страницы. B2C хранит **только список UUID**
+товаров подборки; актуальные данные всегда запрашиваются из B2B
+batch-обогащением. Удалённые/заблокированные в B2B товары тихо уходят в
+`unavailable_ids`, подборка не ломается.
+
+Контракт разделён на два эндпоинта (ранее был один `GET /catalog/collections`
+с товарами внутри) — приведён в соответствие с канон-flow
+`flows/b2c-cart-flows.md#b2c-15-collections` и `b2c/cart/openapi.yaml`.
 
 ### API
 
 - **`GET /api/v1/catalog/collections`**
-  - **Код 200**: массив с товарами коллекции. В коллекцию входят только товары со статусом Moderated и с доступным количеством больше нуля.
-
+  - **200**: массив активных подборок — только метаданные
+    (`CollectionSummary`: `id`, `name`, `description`, `cover_image_url`,
+    `target_url`), **без товаров**, отсортированный по `priority`. Нет
+    подборок → `200` с `[]`.
+- **`GET /api/v1/catalog/collections/{collection_id}`**
+  - **200**: товары подборки после batch-обогащения
+    (`CollectionProducts`: `id`, `name`, `items: CatalogProductCard[]`,
+    `unavailable_ids: uuid[]`). Доступны только `MODERATED`-товары с остатком
+    `> 0`; остальные UUID — в `unavailable_ids`. Все недоступны → `items: []`,
+    `unavailable_ids: [...]` (валидный ответ).
+  - **404**: подборка не найдена/неактивна (`{code: NOT_FOUND}`).
 
 ## Запуск
 
@@ -26,19 +40,29 @@ make build up migrate
 make test
 ```
 
-- `tests/integration/cart/test_collections.py`
-  - `test_collection_products_enriched` - подборки с карточками товаров
-  - `test_blocked_products_not_in_collections` - `BLOCKED` не в `products`, `MODERATED` остаётся
-  - `test_out_of_stock_products_not_in_collections` - товар не отображается, если закончился
-Автотесты `collections_list_returns_metadata_without_products`, `collection_products_enriched_from_b2b`, `unavailable_products_in_unavailable_ids`, `unknown_collection_returns_404` не реализованы, поскольку реализация АПИ-методов в спецификации OpenAPI (которая считается более приоритетной по сравнению с канон флоу) отличается от самого канон флоу
+`tests/integration/cart/test_collections.py` — канон-сценарии US-CART-05:
+
+- `test_collections_list_returns_metadata_without_products` — список подборок
+  без товаров внутри;
+- `test_collection_products_enriched_from_b2b` — товары обогащены из B2B
+  (категория, продавец);
+- `test_unavailable_products_in_unavailable_ids` — заблокированные/удалённые в
+  B2B → в `unavailable_ids`, не в `items`;
+- `test_unknown_collection_returns_404` — несуществующая подборка → `404`.
 
 ## ADR
 
 **Связь подборки с товарами**
 
-- **Альтернативы**: массив UUID в поле подборки; отдельная таблица-связка; копия данных товара в B2C.
-- **Выбор**: таблица `storefront.collection_products` (`collection_id`, `product_id`).
-- **Критерии**: проще менять состав подборки без миграций JSON-массива; при удалении/блокировке товара в каталоге не нужна синхронизация копий.
+- **Альтернативы**: массив UUID в поле подборки; отдельная таблица-связка;
+  копия данных товара в B2C.
+- **Выбор**: таблица-связка `storefront.collection_products`
+  (`collection_id`, `product_id`).
+- **Критерии**: (1) простота обновления состава — `INSERT`/`DELETE` без
+  перезаписи JSON-массива и миграций; (2) консистентность при удалении товара
+  в B2B — B2C хранит только UUID и проверяет доступность обогащением на каждый
+  запрос, так что удалённый товар автоматически уходит в `unavailable_ids` без
+  синхронизации копий.
 
 ## Файлы
 
@@ -46,11 +70,12 @@ make test
 
 ### API
 
-- `api/catalog.py` — `GET /collections`
+- `api/catalog.py` — `GET /collections`, `GET /collections/{collection_id}`
 
 ### Сервисы
 
-- `services/collection_service.py`
+- `services/collection_service.py` — `get_collection_summaries`,
+  `get_collection_products`
 
 ### CRUD
 
@@ -58,8 +83,12 @@ make test
 
 ### Схемы
 
-- `schemas/collection.py` — `Collection`
+- `schemas/collection.py` — `CollectionSummary`, `CollectionProducts`
 - `schemas/catalog.py` — `CatalogProductCard`, `CategoryRef`, `ImageRef`
+
+### Исключения
+
+- `exceptions/collection.py` — `CollectionNotFoundError`
 
 ### Модели
 
