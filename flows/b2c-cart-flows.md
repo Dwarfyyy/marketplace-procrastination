@@ -579,8 +579,8 @@ available_quantity`.
 «Новинки сезона»). Покупатель видит их на главной и переходит к нужным
 товарам. B2C хранит **только список UUID** товаров в подборке — актуальные
 данные (название, цена, наличие, категория, продавец) всегда запрашиваются
-из B2B. Если товар удалили/заблокировали в B2B — он тихо уходит в
-`unavailable_ids`, а подборка не ломается.
+из B2B. Если товар удалили/заблокировали в B2B — он просто не попадает в
+`products` подборки, а сама подборка не ломается.
 
 ### Идентификация пользователя
 
@@ -612,63 +612,57 @@ available_quantity`.
 каждый товар. Доступными считаются товары со статусом `MODERATED`, не
 удалённые (`deleted = false`) и с суммарным `active_quantity > 0` хотя бы по
 одному SKU. Остальные UUID (удалён / заблокирован / на модерации / нет в
-наличии) в карточки не попадают и собираются в `unavailable_ids`.
+наличии) в карточки не превращаются и в `products` подборки не попадают.
 
 ### Эндпоинты
 
 `GET /api/v1/catalog/collections`
 
-Возвращает массив активных подборок — **только метаданные, без товаров**
-(`CollectionSummary`: `id`, `name`, `description`, `cover_image_url`,
-`target_url`), отсортированный по `priority` по возрастанию. Поле `name`
-контракта соответствует колонке `title` модели. Авторизация не нужна. Нет
-активных подборок → `200` с пустым массивом.
-
-`GET /api/v1/catalog/collections/{collection_id}`
-
-Возвращает товары конкретной подборки после batch-обогащения
-(`CollectionProducts`: `id`, `name`, `items: CatalogProductCard[]`,
-`unavailable_ids: uuid[]`). Неизвестная/неактивная подборка → `404`.
+Возвращает массив активных подборок **с товарами внутри**
+(`Collection`: `id`, `name`, `description`, `cover_image_url`, `target_url`,
+`products: CatalogProductCard[]`), отсортированный по `priority` по
+возрастанию. Поле `name` контракта соответствует колонке `title` модели. В
+`products` попадают только доступные карточки; недоступные товары в выдачу не
+включаются. Авторизация не нужна. Нет активных подборок → `200` с пустым
+массивом.
 
 ### Алгоритм
 
-1. **`GET /catalog/collections`**: выбрать активные подборки по правилам
-   фильтрации, отсортировать по `priority`, отдать как массив
-   `CollectionSummary` (без обращения к товарам). Нет подборок → `200` `[]`.
-2. **`GET /catalog/collections/{id}`**:
-   - найти активную подборку по `id`; не нашлась → `404 NOT_FOUND`;
-   - взять **все** `product_id` из `collection_products` для подборки (без
-     фильтра доступности) — это хранимый список UUID;
-   - обогатить их одним батчем из B2B → доступные товары превращаются в
-     `items` (`CatalogProductCard`), недоступные UUID собираются в
-     `unavailable_ids` как разность хранимого списка и доступных;
-   - вернуть `200` с `items` и `unavailable_ids`.
+1. Выбрать активные подборки по правилам фильтрации, отсортировать по
+   `priority`.
+2. Для каждой подборки взять **все** `product_id` из `collection_products`
+   (без фильтра доступности) — это хранимый список UUID.
+3. Обогатить уникальные UUID всех подборок **одним батчем** из B2B → доступные
+   товары превращаются в карточки (`CatalogProductCard`), индексированные по
+   `id`; недоступные UUID карточек не получают.
+4. Для каждой подборки собрать `products` в исходном порядке из доступных
+   карточек; недоступные UUID отбрасываются.
+5. Вернуть `200` с массивом `Collection`. Нет подборок → `200` `[]`.
 
 ### Edge cases
 
 - **Нет активных подборок** → `GET /collections` отдаёт `200` `[]`, не `404`.
-- **Несуществующая/неактивная подборка** → `GET /collections/{id}` →
-  `404 NOT_FOUND`.
-- **Все товары подборки недоступны** → `200` с `items: []` и
-  `unavailable_ids: [...]` — это валидный ответ, а не ошибка.
-- **Товар удалён/заблокирован/на модерации в B2B** → его UUID в
-  `unavailable_ids`, не в `items`; подборка остаётся рабочей.
-- **Товар без остатков** (`active_quantity = 0`) → так же в
-  `unavailable_ids`.
+- **Все товары подборки недоступны** → подборка остаётся в выдаче с
+  `products: []` — это валидный ответ, а не ошибка.
+- **Товар удалён/заблокирован/на модерации в B2B** → его UUID не попадает в
+  `products`; подборка остаётся рабочей.
+- **Товар без остатков** (`active_quantity = 0`) → так же отбрасывается из
+  `products`.
 
 ### Сценарии (тесты)
 
-- `collections_list_returns_metadata_without_products`
-  (`test_collections_list_returns_metadata_without_products`) — список
-  подборок отдаёт только метаданные, без `items`/`products` внутри.
+- `collections_list_returns_metadata_with_products`
+  (`test_collections_list_returns_metadata_with_products`) — список подборок
+  отдаёт метаданные и `products` внутри.
 - `collection_products_enriched_from_b2b`
   (`test_collection_products_enriched_from_b2b`) — товары подборки обогащены
   из B2B (категория, продавец, рейтинг).
-- `unavailable_products_in_unavailable_ids`
-  (`test_unavailable_products_in_unavailable_ids`) — удалённые/заблокированные
-  в B2B уходят в `unavailable_ids`, не в `items`.
-- `unknown_collection_returns_404`
-  (`test_unknown_collection_returns_404`) — несуществующая подборка → `404`.
+- `unavailable_products_excluded_from_products`
+  (`test_unavailable_products_excluded_from_products`) —
+  удалённые/заблокированные в B2B в `products` не попадают.
+- `no_active_collections_returns_empty_list`
+  (`test_no_active_collections_returns_empty_list`) — нет активных подборок →
+  `200` `[]`.
 
 ### ADR — связь подборки с товарами
 
@@ -693,11 +687,9 @@ UUID, не копию данных товара».
 
 ### Примечания
 
-- Контракт разделён на два эндпоинта (список метаданных и товары подборки),
-  тогда как в исходной реализации был один `GET /catalog/collections` с
-  товарами внутри. Канон-flow и OpenAPI приведены в соответствие: список
-  метаданных + отдельный `GET /catalog/collections/{id}` с
-  `items`/`unavailable_ids`.
+- Контракт — один эндпоинт `GET /catalog/collections`, отдающий подборки
+  с товарами внутри (`products`), в соответствии с каноном
+  `b2c/openapi.yaml` (схема `Collection`, `required: [id, name, products]`).
 - Поле `name` контракта = колонка `title` модели `Collection`.
 - «B2B» в этой сборке — доменные таблицы каталога в той же БД; обращение к
   ним моделирует batch-запрос в B2B-каталог.

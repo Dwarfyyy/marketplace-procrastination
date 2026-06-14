@@ -11,8 +11,11 @@ info:
     обогащение из B2B и merge гостевой корзины при логине, а также баннеры
     главной страницы (US-CART-04): публичный список активных баннеров с
     фильтрацией по расписанию и приём CTR-событий (показы/клики), а также
-    подборки товаров на главной (US-CART-05): список подборок без товаров и
-    товары подборки с batch-обогащением из B2B и `unavailable_ids`.
+    подборки товаров на главной (US-CART-05): список подборок с товарами
+    внутри, batch-обогащёнными из B2B.
+    о появлении товара в наличии и снижении цены.
+    обогащение из B2B и merge гостевой корзины при логине.
+    фильтрацией по расписанию и приём CTR-событий (показы/клики).
   version: 0.1.0
 
 servers:
@@ -623,12 +626,16 @@ paths:
 
   /catalog/collections:
     get:
-      summary: Список подборок (без товаров)
+      summary: Подборки товаров (с товарами внутри)
       description: >
-        Возвращает активные тематические подборки главной (US-CART-05) —
-        только метаданные, **без товаров внутри**, отсортированные по
-        `priority` модели по возрастанию. Поле `name` соответствует колонке
-        `title` модели. Если активных подборок нет — `200` с пустым массивом.
+        Возвращает активные тематические подборки главной (US-CART-05) с
+        товарами внутри, отсортированные по `priority` модели по возрастанию.
+        B2C хранит только список UUID; по нему делается batch-обогащение из
+        B2B. В `products` попадают только доступные карточки
+        (`CatalogProductCard`); недоступные товары (удалён/заблокирован/на
+        модерации/нет в наличии) в выдачу не включаются — подборка не
+        ломается. Поле `name` соответствует колонке `title` модели. Если
+        активных подборок нет — `200` с пустым массивом.
 
         Публичный эндпоинт: авторизация не требуется.
       operationId: getCollections
@@ -637,57 +644,13 @@ paths:
       security: []
       responses:
         "200":
-          description: Список активных подборок (возможно пустой)
+          description: Список активных подборок с товарами (возможно пустой)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/CollectionSummary"
-
-  /catalog/collections/{collection_id}:
-    get:
-      summary: Товары подборки (с обогащением из B2B)
-      description: >
-        Возвращает товары конкретной подборки (US-CART-05). B2C хранит только
-        список UUID; по нему делается batch-обогащение из B2B. Доступные
-        товары попадают в `items` (карточки `CatalogProductCard`), а UUID
-        недоступных (удалён/заблокирован/на модерации/нет в наличии) тихо
-        уходят в `unavailable_ids` — подборка не ломается. Все товары
-        недоступны → `items: []`, `unavailable_ids: [...]`, это валидный
-        ответ. Неизвестная/неактивная подборка → `404`.
-
-        Публичный эндпоинт: авторизация не требуется.
-      operationId: getCollectionProducts
-      tags:
-        - collections
-      security: []
-      parameters:
-        - name: collection_id
-          in: path
-          required: true
-          description: UUID подборки
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: Товары подборки с разделением на доступные и недоступные
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CollectionProducts"
-        "404":
-          description: Подборка не найдена или неактивна
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                unknownCollection:
-                  value:
-                    code: NOT_FOUND
-                    message: "Collection not found: <uuid>"
+                  $ref: "#/components/schemas/Collection"
 
 components:
   securitySchemes:
@@ -888,14 +851,19 @@ components:
         message:
           type: string
 
-    CollectionSummary:
+    Collection:
       type: object
       description: >
-        Метаданные подборки главной (US-CART-05) без товаров внутри. Поле
-        `name` соответствует колонке `title` модели.
+        Подборка товаров главной (US-CART-05) с товарами внутри. B2C хранит
+        только UUID товаров; `products` собираются batch-обогащением из B2B на
+        каждый запрос и содержат только доступные карточки. Недоступные товары
+        (удалены/заблокированы/на модерации/нет в наличии) в выдачу не
+        включаются. Поле `name` соответствует колонке `title` модели. Нет
+        доступных товаров → `products: []`.
       required:
         - id
         - name
+        - products
       properties:
         id:
           type: string
@@ -911,35 +879,11 @@ components:
         target_url:
           type: string
           nullable: true
-
-    CollectionProducts:
-      type: object
-      description: >
-        Товары подборки после batch-обогащения из B2B (US-CART-05). `items` —
-        доступные карточки; `unavailable_ids` — UUID товаров из состава
-        подборки, недоступных в B2B (удалены/заблокированы/на модерации/нет в
-        наличии). Все товары недоступны → `items: []`, `unavailable_ids: [...]`.
-      required:
-        - id
-        - name
-        - items
-        - unavailable_ids
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        items:
+        products:
           type: array
+          description: Доступные карточки товаров подборки (обогащены из B2B)
           items:
             $ref: "#/components/schemas/CatalogProductCard"
-        unavailable_ids:
-          type: array
-          description: UUID товаров подборки, недоступных в B2B на момент запроса
-          items:
-            type: string
-            format: uuid
 
     Banner:
       type: object

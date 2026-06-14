@@ -5,28 +5,21 @@ from pydantic import BaseModel, ConfigDict
 from schemas.catalog import CatalogProductCard
 
 
-class CollectionSummary(BaseModel):
-	"""Метаданные подборки для главной — без товаров внутри."""
+class Collection(BaseModel):
+	"""Подборка товаров для главной (US-CART-05) с обогащёнными карточками.
+
+	B2C хранит только список UUID товаров подборки; `products` собираются
+	batch-обогащением из B2B на каждый запрос. В `products` попадают только
+	доступные товары (`MODERATED`, не удалённые, с остатком `> 0`); недоступные
+	(удалены/заблокированы/на модерации/нет в наличии) в выдачу не включаются —
+	подборка при этом не ломается. Поле `name` соответствует колонке `title`
+	модели. Нет доступных товаров → `products: []` (валидный ответ).
+	"""
 
 	id: uuid.UUID
 	name: str
 	description: str = ""
 	cover_image_url: str | None = None
 	target_url: str | None = None
-	model_config = ConfigDict(from_attributes=True)
-
-
-class CollectionProducts(BaseModel):
-	"""Товары конкретной подборки после batch-обогащения из B2B.
-
-	`items` — доступные карточки товаров; `unavailable_ids` — UUID товаров,
-	которые B2C хранит в составе подборки, но которые сейчас недоступны в B2B
-	(удалены/заблокированы/на модерации/нет в наличии). Все товары недоступны →
-	`items: []`, `unavailable_ids: [...]` — это валидный ответ, не ошибка.
-	"""
-
-	id: uuid.UUID
-	name: str
-	items: list[CatalogProductCard]
-	unavailable_ids: list[uuid.UUID]
+	products: list[CatalogProductCard]
 	model_config = ConfigDict(from_attributes=True)
