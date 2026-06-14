@@ -10,8 +10,8 @@
 
 Перечень реализованных эндпоинтов:
 
-- `GET /api/v1/products`
-  - **Query/Path params**: `category_id` (обязательный), `search` (опционально, минимум 4 символа после trim), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`)
+- `GET /api/v1/catalog/products`
+  - **Query/Path params**: `category_id` (обязательный), `q` (опционально, минимум 4 символа после trim), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`)
   - **Код 200**: `ProductShortListResponse` — список товаров, соответствующих поисковому запросу, с полями `items[]` (id, title, image, price, in_stock, is_in_cart), `total_count`, `limit`, `offset`. Пустой список, если ничего не найдено
   - **Код 400**: `Search query must be at least 4 characters` (поисковый запрос короче 4 символов после trim)
   - **Код 500**: текст ошибки (прочие сбои)

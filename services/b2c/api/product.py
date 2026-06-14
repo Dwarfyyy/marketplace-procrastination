@@ -14,9 +14,10 @@ from schemas.sku import Sku as SkuSchema, SkuShort as SkuShortSchema
 from services import product_service, sku_service
 
 router = fastapi.APIRouter(prefix="/api/v1/products")
+catalog_products_router = fastapi.APIRouter(prefix="/api/v1/catalog/products")
 
 
-@router.get("", response_model=ProductShortListResponse)
+@catalog_products_router.get("", response_model=ProductShortListResponse)
 async def get_product_list_api(
 	db_session: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
 	category_id: Optional[uuid.UUID] = None,
@@ -24,7 +25,7 @@ async def get_product_list_api(
 	offset: Annotated[int, fastapi.Query(ge=0)] = 0,
 	filter: Optional[str] = None,
 	sort: str = "popularity",
-	search: Optional[str] = None,
+	q: Optional[str] = None,
 ) -> ProductShortListResponse:
 	filters_param = None
 	if filter:
@@ -48,7 +49,7 @@ async def get_product_list_api(
 			str(category_id) if category_id else None,
 			filters_param,
 			sort,
-			search,
+			q,
 		)
 	except ValueError as e:
 		raise fastapi.HTTPException(

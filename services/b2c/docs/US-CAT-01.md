@@ -8,8 +8,8 @@
 
 Перечень реализованных эндпоинтов:
 
-- `GET /api/v1/products`
-  - **Query/Path params**: `category_id` (обязательный), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`, допустимые значения: `rating`, `popularity`, `price_asc`, `price_desc`, `date_desc`, `discount_desc`), `search` (опционально, минимум 4 символа после trim)
+- `GET /api/v1/catalog/products`
+  - **Query/Path params**: `category_id` (обязательный), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`, допустимые значения: `rating`, `popularity`, `price_asc`, `price_desc`, `date_desc`, `discount_desc`), `q` (опционально, минимум 4 символа после trim)
   - **Код 200**: `ProductShortListResponse` — список товаров с полями `items[]` (id, title, image, price, in_stock, is_in_cart), `total_count`, `limit`, `offset`
   - **Код 400**: `Invalid sort parameter. Allowed: ...` (невалидный параметр сортировки) / `Search query must be at least 3 characters` (поисковый запрос короче 3 символов)
   - **Код 500**: текст ошибки (прочие сбои)
