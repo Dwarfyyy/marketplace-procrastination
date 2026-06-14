@@ -8,7 +8,6 @@ from fastapi import Request
 import json
 
 from exceptions.banner import BannerNotFoundError, EmptyEventsError
-from exceptions.collection import CollectionNotFoundError
 from exceptions.product import ProductNotFoundError
 from schemas.banner import Banner, BannerEventsRequest
 from schemas.catalog import (
@@ -23,7 +22,7 @@ from exceptions.category import CategoryNotFoundError
 from core import db
 
 
-from schemas.collection import CollectionProducts, CollectionSummary
+from schemas.collection import Collection
 from services import (
 	banner_service,
 	category_service,
@@ -224,31 +223,17 @@ async def get_facets(
 		) from e
 
 
-@router.get("/collections", response_model=list[CollectionSummary])
+@router.get("/collections", response_model=list[Collection])
 async def get_collections(
 	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
-) -> list[CollectionSummary]:
-	"""List active collections (metadata only, without products)."""
-	return await collection_service.get_collection_summaries(db)
+) -> list[Collection]:
+	"""Active collections with their products, batch-enriched from B2B.
 
-
-@router.get("/collections/{collection_id}", response_model=CollectionProducts)
-async def get_collection_products(
-	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
-	collection_id: uuid.UUID,
-) -> CollectionProducts:
-	"""Products of a single collection, batch-enriched from B2B.
-
-	Unavailable products go to ``unavailable_ids`` (not an error); an unknown
-	collection yields ``404``.
+	Each collection embeds available product cards in ``products``; unavailable
+	products (deleted/blocked/under moderation/out of stock) are omitted. No
+	active collections yields ``200`` with an empty array.
 	"""
-	try:
-		return await collection_service.get_collection_products(db, collection_id)
-	except CollectionNotFoundError as e:
-		raise fastapi.HTTPException(
-			status_code=404,
-			detail={"code": "NOT_FOUND", "message": str(e)},
-		) from e
+	return await collection_service.get_collections(db)
 
 
 @router.get("/banners")
