@@ -1,7 +1,7 @@
 import fastapi
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi import Request
@@ -10,7 +10,12 @@ import json
 from exceptions.banner import BannerNotFoundError, EmptyEventsError
 from exceptions.product import ProductNotFoundError
 from schemas.banner import Banner, BannerEventsRequest
-from schemas.catalog import CatalogProductCard, CategoryRef, CategoryTreeNode
+from schemas.catalog import (
+	CatalogProductCard,
+	CategoryRef,
+	CategoryTreeNode,
+	PaginatedCatalogProducts,
+)
 from schemas.category import CategoryInfoResponse, FacetsResponse, FilterResponse
 from exceptions.category import CategoryNotFoundError
 from core import db
@@ -26,6 +31,52 @@ from services import (
 from core.db import get_db
 
 router = fastapi.APIRouter(prefix="/api/v1/catalog")
+
+
+@router.get("/products", response_model=PaginatedCatalogProducts)
+async def get_catalog_products(
+	db_session: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
+	category_id: Optional[uuid.UUID] = None,
+	limit: Annotated[int, fastapi.Query(ge=1, le=100)] = 20,
+	offset: Annotated[int, fastapi.Query(ge=0)] = 0,
+	filter: Optional[str] = None,
+	sort: str = "popularity",
+	q: Optional[str] = None,
+) -> PaginatedCatalogProducts:
+	filters_param = None
+	if filter:
+		try:
+			filters_obj = json.loads(filter)
+			filters_param = json.dumps(filters_obj, ensure_ascii=False)
+		except json.JSONDecodeError as e:
+			raise fastapi.HTTPException(
+				status_code=400,
+				detail={
+					"code": "INVALID_FILTER",
+					"message": "Invalid JSON in filter parameter",
+				},
+			) from e
+
+	try:
+		return await product_service.get_products_list(
+			db_session,
+			limit,
+			offset,
+			str(category_id) if category_id else None,
+			filters_param,
+			sort,
+			q,
+		)
+	except ValueError as e:
+		raise fastapi.HTTPException(
+			status_code=400,
+			detail={"code": "INVALID_REQUEST", "message": str(e)},
+		) from e
+	except SQLAlchemyError as e:
+		raise fastapi.HTTPException(
+			status_code=502,
+			detail={"code": "B2B_UNAVAILABLE", "message": "Catalog service is unavailable"},
+		) from e
 
 
 @router.get("/categories/tree", response_model=list[CategoryTreeNode])

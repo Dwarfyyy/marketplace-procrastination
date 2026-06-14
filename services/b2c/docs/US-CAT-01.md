@@ -8,11 +8,11 @@
 
 Перечень реализованных эндпоинтов:
 
-- `GET /api/v1/products`
-  - **Query/Path params**: `category_id` (обязательный), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`, допустимые значения: `rating`, `popularity`, `price_asc`, `price_desc`, `date_desc`, `discount_desc`), `search` (опционально, минимум 4 символа после trim)
-  - **Код 200**: `ProductShortListResponse` — список товаров с полями `items[]` (id, title, image, price, in_stock, is_in_cart), `total_count`, `limit`, `offset`
-  - **Код 400**: `Invalid sort parameter. Allowed: ...` (невалидный параметр сортировки) / `Search query must be at least 3 characters` (поисковый запрос короче 3 символов)
-  - **Код 500**: текст ошибки (прочие сбои)
+- `GET /api/v1/catalog/products`
+  - **Query/Path params**: `category_id` (опционально, UUID), `limit` (default `20`), `offset` (default `0`), `filter` (JSON-строка, опционально), `sort` (default `popularity`, допустимые значения: `price_asc`, `price_desc`, `popularity`, `new`), `q` (опционально, минимум 4 символа после trim)
+  - **Код 200**: `PaginatedCatalogProducts` — список карточек `CatalogProductCard` в `items[]` (поля: `id`, `name`, `min_price`, `old_price`, `slug`, `category`, `has_stock`, `rating`, `reviews_count`, `images[]` (`ImageRef`), `seller`), плюс `total_count`, `limit`, `offset`
+  - **Код 400**: `Invalid sort parameter. Allowed: ...` (невалидный параметр сортировки) / `Search query must be at least 4 characters` (поисковый запрос короче 4 символов) / `INVALID_FILTER` (невалидный JSON в `filter`)
+  - **Код 502**: `B2B_UNAVAILABLE` (каталог недоступен)
 
 - `GET /api/v1/catalog/facets/`
   - **Query/Path params**: `category_id` (обязательный UUID), `filters` (опционально, JSON-строка применённых фильтров)

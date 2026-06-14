@@ -59,7 +59,7 @@ async def test_catalog_returns_filtered_sorted_products(
 	category_with_products: CategoryWithProductsData,
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
 			"category_id": str(category_with_products.category.id),
 		},
@@ -79,7 +79,7 @@ async def test_invalid_sort_returns_400(
 	client: AsyncClient, category_with_products: CategoryWithProductsData, sort: str
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={"category_id": str(category_with_products.category.id), "sort": sort},
 	)
 	assert response.status_code == 400
@@ -89,10 +89,10 @@ async def test_search_description_returns_matching_products(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
 			"category_id": str(category_with_products.category.id),
-			"search": "Description 1",
+			"q": "Description 1",
 		},
 	)
 	assert response.status_code == 200
@@ -107,10 +107,10 @@ async def test_search_title_returns_matching_products(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
 			"category_id": str(category_with_products.category.id),
-			"search": "Product 1",
+			"q": "Product 1",
 		},
 	)
 	assert response.status_code == 200
@@ -125,10 +125,10 @@ async def test_short_query_returns_400(
 	client: AsyncClient, category_with_products: CategoryWithProductsData, search: str
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
 			"category_id": str(category_with_products.category.id),
-			"search": search,
+			"q": search,
 		},
 	)
 	assert response.status_code == 400
@@ -138,10 +138,10 @@ async def test_empty_results_returns_200(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
 			"category_id": str(category_with_products.category.id),
-			"search": "Not exists",
+			"q": "Not exists",
 		},
 	)
 	assert response.status_code == 200
@@ -153,10 +153,10 @@ async def test_special_chars_do_not_break_query(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
 			"category_id": str(category_with_products.category.id),
-			"search": "!@#$%^&*()",
+			"q": "!@#$%^&*()",
 		},
 	)
 	assert response.status_code == 200
@@ -169,7 +169,7 @@ async def test_products_list_filters_only_visible_products(
 	visibility_products: VisibilityProductsData,
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={"category_id": str(visibility_products.category.id)},
 	)
 	assert response.status_code == 200
@@ -194,7 +194,7 @@ async def test_b2b_unavailable_returns_502(
 	)
 
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={"category_id": str(category_with_products.category.id)},
 	)
 
