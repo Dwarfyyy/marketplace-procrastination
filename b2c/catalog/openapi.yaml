@@ -3,14 +3,52 @@ info:
   title: B2C Catalog API
   description: >
     OpenAPI-контракт для каталожных эндпоинтов B2C-приложения.
-    Описывает блок "Похожие товары" (US-CAT-04) и навигацию по категориям
-    (US-CAT-05): дерево категорий, детали категории и хлебные крошки.
-  version: 0.2.0
+    Описывает карточку товара (US-CAT-03), блок "Похожие товары" (US-CAT-04)
+    и навигацию по категориям (US-CAT-05): дерево категорий, детали категории
+    и хлебные крошки.
+  version: 0.3.0
 
 servers:
   - url: /api/v1/catalog
 
 paths:
+  /products/{product_id}:
+    get:
+      summary: Карточка товара
+      description: >
+        Возвращает детализацию товара по `product_id`: название, описание,
+        характеристики, изображения и список SKU с ценой, скидкой и остатком.
+        Видим только товар со статусом MODERATED и `deleted=false` — иначе 404.
+        Внутренние поля продавца (`status`, `cost_price`, `reserved_quantity`)
+        в публичный ответ витрины не попадают.
+      operationId: getCatalogProductCard
+      tags:
+        - catalog
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Карточка товара с вложенными SKU
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogProductDetail"
+        "404":
+          description: Товар не найден, заблокирован или помечен удалённым
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Product not found"
+
   /products/{id}/similar:
     get:
       summary: Похожие товары
@@ -305,6 +343,92 @@ components:
           allOf:
             - $ref: "#/components/schemas/CatalogProductSeller"
           nullable: true
+
+    Characteristic:
+      type: object
+      required:
+        - id
+        - name
+        - value
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        value:
+          type: string
+
+    CatalogSku:
+      type: object
+      required:
+        - id
+        - name
+        - price
+        - available_quantity
+        - in_stock
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        price:
+          type: integer
+        discount:
+          type: integer
+          default: 0
+        available_quantity:
+          type: integer
+          minimum: 0
+        in_stock:
+          type: boolean
+        characteristics:
+          type: array
+          items:
+            $ref: "#/components/schemas/Characteristic"
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageRef"
+
+    CatalogProductDetail:
+      type: object
+      required:
+        - id
+        - name
+        - slug
+        - min_price
+        - has_stock
+        - images
+        - skus
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        min_price:
+          type: integer
+        has_stock:
+          type: boolean
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageRef"
+        characteristics:
+          type: array
+          items:
+            $ref: "#/components/schemas/Characteristic"
+        skus:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogSku"
 
     CategoryTreeNode:
       type: object
