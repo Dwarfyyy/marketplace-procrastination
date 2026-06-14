@@ -121,8 +121,15 @@ async def test_unavailable_sku_shown_with_reason(
 		headers=await auth_headers(unavailable_sku_in_cart_data.user.id, db_session),
 	)
 	assert response.status_code == 200
-	assert not response.json()["is_valid"]
-	assert response.json()["issues"][0]["type"] == "OUT_OF_STOCK"
+	body = response.json()
+	assert not body["is_valid"]
+	assert body["issues"][0]["type"] == "OUT_OF_STOCK"
+
+	cart_item = body["cart"]["items"][0]
+	assert cart_item["is_available"] is False
+	assert cart_item["unavailable_reason"] == "OUT_OF_STOCK"
+	assert cart_item["line_total"] == 0
+	assert body["cart"]["subtotal"] == 0
 
 
 async def test_add_sku_increments_quantity_if_already_in_cart(

@@ -1,0 +1,1177 @@
+openapi: 3.0.3
+info:
+  title: B2C Cart API
+  description: >
+    OpenAPI-контракт для эндпоинтов корзины и избранного B2C-приложения.
+    Описывает блок "Избранное" (US-CART-01): добавление, удаление и
+    список избранных товаров с обогащением из B2B, а также подписки на
+    изменения товара (US-CART-02): подписаться/отписаться от уведомлений
+    о появлении товара в наличии и снижении цены, а также корзину покупателя
+    (US-CART-03): CRUD позиций для гостя и авторизованного пользователя,
+    обогащение из B2B и merge гостевой корзины при логине, а также баннеры
+    главной страницы (US-CART-04): публичный список активных баннеров с
+    фильтрацией по расписанию и приём CTR-событий (показы/клики), а также
+    подборки товаров на главной (US-CART-05): список подборок без товаров и
+    товары подборки с batch-обогащением из B2B и `unavailable_ids`.
+  version: 0.1.0
+
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /favorites:
+    get:
+      summary: Список избранного
+      description: >
+        Возвращает избранные товары текущего пользователя, обогащённые
+        данными из каталога (категория, рейтинг, отзывы, продавец).
+        Заблокированные/удалённые в B2B товары исключаются из ответа.
+
+        `user_id` определяется **только** из JWT (claims проверенного
+        access-токена), любой `user_id` в query или body игнорируется.
+      operationId: getFavorites
+      tags:
+        - favorites
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Максимум элементов в ответе
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          description: Смещение от начала списка
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Список избранного
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedCatalogProducts"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+
+  /favorites/{product_id}:
+    put:
+      summary: Добавить товар в избранное
+      description: >
+        Добавляет товар в избранное текущего пользователя. Идемпотентно:
+        повторное добавление того же товара возвращает `204` и не создаёт
+        дубль записи.
+      operationId: addToFavorites
+      tags:
+        - favorites
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Товар добавлен в избранное (или уже был там)
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+        "404":
+          description: Товар не найден или недоступен для добавления
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Товар не найден"
+    delete:
+      summary: Удалить товар из избранного
+      description: >
+        Удаляет товар из избранного текущего пользователя. Идемпотентно:
+        удаление отсутствующей записи также возвращает `204`.
+      operationId: removeFromFavorites
+      tags:
+        - favorites
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Товар удалён из избранного (или не был в нём)
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+
+  /favorites/{product_id}/subscribe:
+    post:
+      summary: Подписаться на изменения товара
+      description: >
+        Создаёт подписку текущего пользователя на уведомления об изменениях
+        товара `{product_id}` (US-CART-02): появление в наличии
+        (`BACK_IN_STOCK`) и/или снижение цены (`PRICE_DROP`).
+
+        Отправка самих уведомлений — отдельный модуль и не входит в этот
+        контракт; эндпоинт только сохраняет подписку.
+
+        `user_id` определяется **только** из JWT, любой `user_id` в
+        query/body игнорируется (та же защита от IDOR, что и для
+        `/favorites`).
+      operationId: subscribeToProduct
+      tags:
+        - subscriptions
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscribeRequest"
+      responses:
+        "204":
+          description: Подписка создана
+        "400":
+          description: Пустой или невалидный `notify_on`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INVALID_NOTIFY_ON
+                message: "Events are required"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+        "404":
+          description: Товар не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Товар не найден"
+        "409":
+          description: Подписка на этот товар уже существует
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: SUBSCRIPTION_ALREADY_EXISTS
+                message: "Подписка на этот товар уже существует"
+        "422":
+          description: Невалидное значение `notify_on` (значение вне enum)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+    delete:
+      summary: Отписаться от изменений товара
+      description: >
+        Удаляет подписку текущего пользователя на товар `{product_id}`.
+        Идемпотентно: удаление отсутствующей подписки также возвращает
+        `204`.
+
+        `user_id` определяется **только** из JWT, любой `user_id` в
+        query/body игнорируется.
+      operationId: unsubscribeFromProduct
+      tags:
+        - subscriptions
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Подписка удалена (или не существовала)
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+
+  /cart:
+    get:
+      summary: Получить корзину
+      description: >
+        Возвращает корзину текущего пользователя (по `Authorization:
+        Bearer`) или гостя (по `X-Session-Id`), обогащённую текущими ценами,
+        остатками и причиной недоступности из B2B. Недоступные позиции
+        присутствуют в `items`, но не входят в `subtotal`.
+      operationId: getCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      responses:
+        "200":
+          description: Корзина
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization` либо `X-Session-Id` не UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: MISSING_CART_IDENTITY
+                message: "Provide Authorization or X-Session-Id header"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Invalid or expired token"
+    delete:
+      summary: Очистить корзину
+      description: Удаляет все позиции корзины текущего пользователя/гостя.
+      operationId: clearCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      responses:
+        "204":
+          description: Корзина очищена
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cart/items:
+    post:
+      summary: Добавить позицию в корзину
+      description: >
+        Добавляет SKU в корзину. Если SKU уже в корзине — `quantity`
+        увеличивается на переданное значение (а не заменяется). Резерв на
+        складе не создаётся (lazy reserve — только при checkout).
+      operationId: addCartItem
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CartItemAddRequest"
+      responses:
+        "200":
+          description: Обновлённая корзина
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: SKU не найден или недоступен для добавления
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "SKU with id ... not found"
+        "409":
+          description: Запрошенное количество больше доступного остатка
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INSUFFICIENT_STOCK
+                message: "Недостаточно остатков: доступно 3"
+        "422":
+          description: Невалидное тело запроса
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+
+  /cart/items/{sku_id}:
+    patch:
+      summary: Изменить количество позиции
+      description: Устанавливает абсолютное значение `quantity` для позиции корзины.
+      operationId: updateCartItemQuantity
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      parameters:
+        - name: sku_id
+          in: path
+          required: true
+          description: UUID SKU
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CartItemQuantityUpdate"
+      responses:
+        "200":
+          description: Обновлённая корзина
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "404":
+          description: Позиция/SKU не найден или SKU недоступен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "SKU ... not in cart"
+        "409":
+          description: Запрошенное количество больше доступного остатка
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INSUFFICIENT_STOCK
+                message: "Not enough stock: available 3"
+        "422":
+          description: Невалидное тело запроса
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+    delete:
+      summary: Удалить позицию из корзины
+      description: Удаляет позицию `{sku_id}` из корзины текущего пользователя/гостя.
+      operationId: deleteCartItem
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      parameters:
+        - name: sku_id
+          in: path
+          required: true
+          description: UUID SKU
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Обновлённая корзина (без удалённой позиции)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "404":
+          description: Позиция не найдена в корзине
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "SKU ... not in cart"
+
+  /cart/validate:
+    post:
+      summary: Провалидировать корзину
+      description: >
+        Возвращает корзину и список проблем (`OUT_OF_STOCK`,
+        `PRODUCT_BLOCKED`, `PRODUCT_DELETED`, `QUANTITY_REDUCED`,
+        `PRICE_CHANGED`) без изменения данных корзины.
+      operationId: validateCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      responses:
+        "200":
+          description: Результат валидации
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartValidationResponse"
+        "400":
+          description: Не передан `X-Session-Id`/`Authorization`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Невалидный или отозванный JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /cart/merge:
+    post:
+      summary: Слить гостевую корзину при логине
+      description: >
+        Переносит позиции гостевой корзины (`X-Session-Id`) в корзину
+        авторизованного пользователя. При конфликте по `sku_id` итоговое
+        `quantity = MAX(quantity_user, quantity_guest)` (без суммирования).
+        Требует одновременно `Authorization: Bearer` и `X-Session-Id`.
+      operationId: mergeGuestCart
+      tags:
+        - cart
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Session-Id
+          in: header
+          required: true
+          description: UUID гостевой сессии, корзина которой будет слита
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Слитая корзина пользователя
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "400":
+          description: Не передан `X-Session-Id`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: MISSING_SESSION_ID
+                message: "Header X-Session-Id is required"
+        "401":
+          description: Нет авторизации или невалидный токен
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+
+  /catalog/banners:
+    get:
+      summary: Активные баннеры главной
+      description: >
+        Возвращает баннеры главной страницы (US-CART-04), отсортированные
+        по `ordering` (= `priority` модели) по возрастанию. В выдачу
+        попадают только баннеры с `is_active = true`, у которых текущее
+        время (UTC) лежит в окне расписания `active_from`..`active_to`
+        (любая из границ может быть пустой). Если активных баннеров нет —
+        `200` с пустым массивом.
+
+        Публичный эндпоинт: авторизация не требуется. Баннеры создаются и
+        редактируются только в Django Admin, не через API.
+      operationId: getBanners
+      tags:
+        - banners
+      security: []
+      responses:
+        "200":
+          description: Список активных баннеров (возможно пустой)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Banner"
+
+  /catalog/banner-events:
+    post:
+      summary: Записать CTR-события баннеров
+      description: >
+        Принимает батч событий показов (`impression`) и кликов (`click`)
+        по баннерам и сохраняет их в журнал `banner_events` для
+        CTR-аналитики. Батч — чтобы клиент мог отправить накопленные
+        события слайдера одним вызовом.
+
+        Все `banner_id` из событий должны существовать; если хотя бы один
+        неизвестен — `400 BANNER_NOT_FOUND`, и ни одно событие батча не
+        записывается. Авторизация не требуется; при наличии валидного
+        `Authorization: Bearer` событие сохраняется с `user_id` из JWT,
+        иначе — с `user_id = null`.
+      operationId: recordBannerEvents
+      tags:
+        - banners
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BannerEventsRequest"
+      responses:
+        "204":
+          description: События записаны
+        "400":
+          description: Пустой список событий или неизвестный `banner_id`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unknownBanner:
+                  value:
+                    code: BANNER_NOT_FOUND
+                    message: "Banner not found: <uuid>"
+                emptyEvents:
+                  value:
+                    code: EMPTY_EVENTS
+                    message: "Events list must not be empty"
+        "422":
+          description: Невалидное тело запроса (пустой `events` или неверный `event`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+
+  /catalog/collections:
+    get:
+      summary: Список подборок (без товаров)
+      description: >
+        Возвращает активные тематические подборки главной (US-CART-05) —
+        только метаданные, **без товаров внутри**, отсортированные по
+        `priority` модели по возрастанию. Поле `name` соответствует колонке
+        `title` модели. Если активных подборок нет — `200` с пустым массивом.
+
+        Публичный эндпоинт: авторизация не требуется.
+      operationId: getCollections
+      tags:
+        - collections
+      security: []
+      responses:
+        "200":
+          description: Список активных подборок (возможно пустой)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CollectionSummary"
+
+  /catalog/collections/{collection_id}:
+    get:
+      summary: Товары подборки (с обогащением из B2B)
+      description: >
+        Возвращает товары конкретной подборки (US-CART-05). B2C хранит только
+        список UUID; по нему делается batch-обогащение из B2B. Доступные
+        товары попадают в `items` (карточки `CatalogProductCard`), а UUID
+        недоступных (удалён/заблокирован/на модерации/нет в наличии) тихо
+        уходят в `unavailable_ids` — подборка не ломается. Все товары
+        недоступны → `items: []`, `unavailable_ids: [...]`, это валидный
+        ответ. Неизвестная/неактивная подборка → `404`.
+
+        Публичный эндпоинт: авторизация не требуется.
+      operationId: getCollectionProducts
+      tags:
+        - collections
+      security: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          description: UUID подборки
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Товары подборки с разделением на доступные и недоступные
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionProducts"
+        "404":
+          description: Подборка не найдена или неактивна
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unknownCollection:
+                  value:
+                    code: NOT_FOUND
+                    message: "Collection not found: <uuid>"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        user_id извлекается из claims токена middleware'ом после проверки
+        подписи и активной сессии. user_id из query/body не используется —
+        это защита от IDOR на список избранного и подписки.
+
+    sessionAuth:
+      type: apiKey
+      in: header
+      name: X-Session-Id
+      description: >
+        Идентификатор гостевой корзины (US-CART-03): UUID v4, генерируется
+        клиентом и передаётся в каждом запросе. Используется только когда
+        не передан `Authorization: Bearer` — в этом случае корзина
+        принадлежит пользователю (`user_id` из JWT), а `X-Session-Id`
+        игнорируется (кроме `/cart/merge`, где требуются оба).
+
+  schemas:
+    SubscriptionEvent:
+      type: string
+      description: >
+        Тип уведомления (`notify_on` в задаче US-CART-02): появление товара
+        в наличии или снижение цены.
+      enum:
+        - BACK_IN_STOCK
+        - PRICE_DROP
+
+    SubscribeRequest:
+      type: object
+      properties:
+        events:
+          type: array
+          description: Список типов уведомлений (`notify_on`)
+          items:
+            $ref: "#/components/schemas/SubscriptionEvent"
+          default:
+            - BACK_IN_STOCK
+            - PRICE_DROP
+
+    ValidationErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+        - details
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: "Request validation failed"
+        details:
+          type: array
+          items:
+            type: object
+
+    ImageRef:
+      type: object
+      required:
+        - id
+        - url
+        - ordering
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        alt:
+          type: string
+          default: ""
+        ordering:
+          type: integer
+          minimum: 0
+        is_main:
+          type: boolean
+          default: false
+
+    CategoryRef:
+      type: object
+      required:
+        - id
+        - name
+        - level
+        - path
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        level:
+          type: integer
+          minimum: 0
+        path:
+          type: array
+          items:
+            type: string
+
+    CatalogProductSeller:
+      type: object
+      required:
+        - id
+        - display_name
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+
+    CatalogProductCard:
+      type: object
+      required:
+        - id
+        - name
+        - min_price
+        - has_stock
+        - images
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        min_price:
+          type: integer
+        old_price:
+          type: integer
+          nullable: true
+        slug:
+          type: string
+          nullable: true
+        category:
+          allOf:
+            - $ref: "#/components/schemas/CategoryRef"
+          nullable: true
+        has_stock:
+          type: boolean
+        rating:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 5
+          nullable: true
+        reviews_count:
+          type: integer
+          minimum: 0
+          default: 0
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageRef"
+        seller:
+          allOf:
+            - $ref: "#/components/schemas/CatalogProductSeller"
+          nullable: true
+
+    PaginatedCatalogProducts:
+      type: object
+      required:
+        - items
+        - total_count
+        - limit
+        - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogProductCard"
+        total_count:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    CollectionSummary:
+      type: object
+      description: >
+        Метаданные подборки главной (US-CART-05) без товаров внутри. Поле
+        `name` соответствует колонке `title` модели.
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          default: ""
+        cover_image_url:
+          type: string
+          nullable: true
+        target_url:
+          type: string
+          nullable: true
+
+    CollectionProducts:
+      type: object
+      description: >
+        Товары подборки после batch-обогащения из B2B (US-CART-05). `items` —
+        доступные карточки; `unavailable_ids` — UUID товаров из состава
+        подборки, недоступных в B2B (удалены/заблокированы/на модерации/нет в
+        наличии). Все товары недоступны → `items: []`, `unavailable_ids: [...]`.
+      required:
+        - id
+        - name
+        - items
+        - unavailable_ids
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogProductCard"
+        unavailable_ids:
+          type: array
+          description: UUID товаров подборки, недоступных в B2B на момент запроса
+          items:
+            type: string
+            format: uuid
+
+    Banner:
+      type: object
+      description: >
+        Баннер главной страницы (US-CART-04). Поля `ordering` /
+        `active_from` / `active_to` соответствуют колонкам модели
+        `priority` / `start_at` / `end_at`.
+      required:
+        - id
+        - title
+        - image_url
+        - link
+        - ordering
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        image_url:
+          type: string
+        link:
+          type: string
+        ordering:
+          type: integer
+          description: Порядок в слайдере (по возрастанию, меньше — выше)
+        active_from:
+          type: string
+          format: date-time
+          nullable: true
+        active_to:
+          type: string
+          format: date-time
+          nullable: true
+
+    BannerEventType:
+      type: string
+      description: Тип CTR-события баннера
+      enum:
+        - impression
+        - click
+
+    BannerEventItem:
+      type: object
+      required:
+        - banner_id
+        - event
+        - timestamp
+      properties:
+        banner_id:
+          type: string
+          format: uuid
+        event:
+          $ref: "#/components/schemas/BannerEventType"
+        timestamp:
+          type: string
+          format: date-time
+
+    BannerEventsRequest:
+      type: object
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          minItems: 1
+          description: Батч CTR-событий (минимум одно)
+          items:
+            $ref: "#/components/schemas/BannerEventItem"
+
+    CartItemAddRequest:
+      type: object
+      required:
+        - sku_id
+        - quantity
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+
+    CartItemQuantityUpdate:
+      type: object
+      required:
+        - quantity
+      properties:
+        quantity:
+          type: integer
+          minimum: 1
+
+    CartItem:
+      type: object
+      required:
+        - sku_id
+        - product_id
+        - name
+        - sku_code
+        - quantity
+        - unit_price
+        - line_total
+        - available_quantity
+        - is_available
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        sku_code:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          type: integer
+          description: Текущая цена SKU, пересчитывается из B2B при каждом обращении
+        unit_price_at_add:
+          type: integer
+          nullable: true
+          description: >
+            Цена SKU на момент добавления в корзину. Используется только
+            для сравнения в `cart/validate` (`PRICE_CHANGED`), не как цена
+            позиции.
+        line_total:
+          type: integer
+          description: "`unit_price * quantity`, `0` если позиция недоступна"
+        available_quantity:
+          type: integer
+          minimum: 0
+        is_available:
+          type: boolean
+          description: >
+            Вычисляется при каждом обогащении из B2B (не хранится в БД):
+            `false`, если товар удалён/заблокирован/на модерации либо
+            `available_quantity <= 0`.
+        unavailable_reason:
+          type: string
+          nullable: true
+          enum:
+            - PRODUCT_DELETED
+            - PRODUCT_BLOCKED
+            - ON_MODERATION
+            - OUT_OF_STOCK
+          description: Причина недоступности, вычисляется заново при каждом ответе
+        image:
+          allOf:
+            - $ref: "#/components/schemas/ImageRef"
+          nullable: true
+
+    CartResponse:
+      type: object
+      required:
+        - items
+        - items_count
+        - subtotal
+        - is_valid
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartItem"
+        items_count:
+          type: integer
+          minimum: 0
+          description: Суммарное количество единиц товара по всем позициям
+        subtotal:
+          type: integer
+          description: >
+            Сумма `line_total` только по доступным позициям; недоступные
+            позиции присутствуют в `items`, но не входят в `subtotal`
+        is_valid:
+          type: boolean
+          description: >
+            `false`, если хотя бы одна позиция недоступна или её
+            `quantity` превышает `available_quantity`
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CartValidationIssue:
+      type: object
+      required:
+        - sku_id
+        - type
+        - message
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - PRICE_CHANGED
+            - OUT_OF_STOCK
+            - QUANTITY_REDUCED
+            - PRODUCT_BLOCKED
+            - PRODUCT_DELETED
+        message:
+          type: string
+        old_value:
+          nullable: true
+          oneOf:
+            - type: string
+            - type: integer
+        new_value:
+          nullable: true
+          oneOf:
+            - type: string
+            - type: integer
+
+    CartValidationResponse:
+      type: object
+      required:
+        - is_valid
+        - cart
+        - issues
+      properties:
+        is_valid:
+          type: boolean
+        cart:
+          $ref: "#/components/schemas/CartResponse"
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartValidationIssue"

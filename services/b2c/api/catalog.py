@@ -1,13 +1,14 @@
 import fastapi
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi import Request
 import json
 
 from exceptions.banner import BannerNotFoundError, EmptyEventsError
+from exceptions.collection import CollectionNotFoundError
 from exceptions.product import ProductNotFoundError
 from schemas.banner import Banner, BannerEventsRequest
 from schemas.catalog import (
@@ -15,13 +16,14 @@ from schemas.catalog import (
 	CatalogProductDetail,
 	CategoryRef,
 	CategoryTreeNode,
+	PaginatedCatalogProducts,
 )
 from schemas.category import CategoryInfoResponse, FacetsResponse, FilterResponse
 from exceptions.category import CategoryNotFoundError
 from core import db
 
 
-from schemas.collection import Collection
+from schemas.collection import CollectionProducts, CollectionSummary
 from services import (
 	banner_service,
 	category_service,
@@ -31,6 +33,52 @@ from services import (
 from core.db import get_db
 
 router = fastapi.APIRouter(prefix="/api/v1/catalog")
+
+
+@router.get("/products", response_model=PaginatedCatalogProducts)
+async def get_catalog_products(
+	db_session: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
+	category_id: Optional[uuid.UUID] = None,
+	limit: Annotated[int, fastapi.Query(ge=1, le=100)] = 20,
+	offset: Annotated[int, fastapi.Query(ge=0)] = 0,
+	filter: Optional[str] = None,
+	sort: str = "popularity",
+	q: Optional[str] = None,
+) -> PaginatedCatalogProducts:
+	filters_param = None
+	if filter:
+		try:
+			filters_obj = json.loads(filter)
+			filters_param = json.dumps(filters_obj, ensure_ascii=False)
+		except json.JSONDecodeError as e:
+			raise fastapi.HTTPException(
+				status_code=400,
+				detail={
+					"code": "INVALID_FILTER",
+					"message": "Invalid JSON in filter parameter",
+				},
+			) from e
+
+	try:
+		return await product_service.get_products_list(
+			db_session,
+			limit,
+			offset,
+			str(category_id) if category_id else None,
+			filters_param,
+			sort,
+			q,
+		)
+	except ValueError as e:
+		raise fastapi.HTTPException(
+			status_code=400,
+			detail={"code": "INVALID_REQUEST", "message": str(e)},
+		) from e
+	except SQLAlchemyError as e:
+		raise fastapi.HTTPException(
+			status_code=502,
+			detail={"code": "B2B_UNAVAILABLE", "message": "Catalog service is unavailable"},
+		) from e
 
 
 @router.get("/categories/tree", response_model=list[CategoryTreeNode])
@@ -176,11 +224,31 @@ async def get_facets(
 		) from e
 
 
-@router.get("/collections", response_model=list[Collection])
+@router.get("/collections", response_model=list[CollectionSummary])
 async def get_collections(
 	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
-) -> list[Collection]:
-	return await collection_service.get_catalog_collections(db)
+) -> list[CollectionSummary]:
+	"""List active collections (metadata only, without products)."""
+	return await collection_service.get_collection_summaries(db)
+
+
+@router.get("/collections/{collection_id}", response_model=CollectionProducts)
+async def get_collection_products(
+	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
+	collection_id: uuid.UUID,
+) -> CollectionProducts:
+	"""Products of a single collection, batch-enriched from B2B.
+
+	Unavailable products go to ``unavailable_ids`` (not an error); an unknown
+	collection yields ``404``.
+	"""
+	try:
+		return await collection_service.get_collection_products(db, collection_id)
+	except CollectionNotFoundError as e:
+		raise fastapi.HTTPException(
+			status_code=404,
+			detail={"code": "NOT_FOUND", "message": str(e)},
+		) from e
 
 
 @router.get("/banners")

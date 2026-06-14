@@ -1,0 +1,13 @@
+# Append-only contract/spec docs: every US-CART-* / US-CAT-* branch adds a new
+# section at the end of these shared files, so parallel branches collide on the
+# same trailing lines at PR/merge time. The `union` merge driver resolves such
+# collisions automatically by keeping *both* sides' added lines instead of
+# raising a conflict. Safe here because the changes are additive (new sections /
+# new paths / new schemas), never edits to the same existing lines.
+#
+# After a union auto-merge, skim the merged section once: union concatenates in
+# order and will NOT dedupe if two branches happen to add the *same* key — that
+# case still needs a manual look. For everything else this removes the manual
+# conflict resolution you kept hitting.
+flows/b2c-cart-flows.md   merge=union
+b2c/cart/openapi.yaml      merge=union

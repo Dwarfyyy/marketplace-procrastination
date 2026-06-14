@@ -26,7 +26,7 @@ async def test_product_card_returns_full_data_with_skus(
 	assert body["min_price"] == min(sku.price for sku in skus)
 	assert body["has_stock"] is any(sku.active_quantity > 0 for sku in skus)
 	assert [item["name"] for item in body["skus"]] == [sku.name for sku in skus]
-	for item, sku in zip(body["skus"], skus):
+	for item, sku in zip(body["skus"], skus, strict=True):
 		assert item["discount"] == sku.discount
 		assert item["available_quantity"] == sku.active_quantity
 		assert item["in_stock"] is (sku.active_quantity > 0)

@@ -74,7 +74,11 @@ async def get_products_list(
 	sort: str,
 	search: Optional[str],
 ) -> Tuple[List[Product], int]:
-	query = select(Product).options(selectinload(Product.images))
+	query = select(Product).options(
+		selectinload(Product.images),
+		selectinload(Product.skus),
+		selectinload(Product.seller),
+	)
 	count_query = select(func.count(func.distinct(Product.id)))
 
 	# Условие видимости: status = MODERATED AND active_quantity > 0
@@ -135,14 +139,10 @@ async def get_products_list(
 				else min_price_subquery.c.min_price.desc()
 			)
 			query = query.order_by(sort_column)
-		case "date_desc":
-			query = query.order_by(Product.created_at.desc())
-		case "rating":
-			query = query.order_by(Product.rating.desc())
 		case "popularity":
 			query = query.order_by(Product.popularity.desc())
-		case "discount_desc":
-			query = query.order_by(Product.discount.desc())
+		case "new":
+			query = query.order_by(Product.created_at.desc())
 		case _:
 			query = query.order_by(Product.created_at.desc())
 
