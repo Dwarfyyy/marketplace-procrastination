@@ -10,16 +10,6 @@ from schemas.image import ImageInFavorite
 from schemas.sku import Sku, SkuInFavorite
 
 
-class ProductShort(BaseModel):
-	id: uuid.UUID
-	title: str
-	image: str = Field(format="uri")
-	price: float
-	in_stock: bool
-	is_in_cart: bool
-	model_config = ConfigDict(from_attributes=True)
-
-
 class Product(BaseModel):
 	id: uuid.UUID
 	slug: str
@@ -35,14 +25,6 @@ class Product(BaseModel):
 	@classmethod
 	def _extract_image_urls(cls, value: Any) -> Any:
 		return [item.url if hasattr(item, "url") else item for item in value]
-
-
-class ProductShortListResponse(BaseModel):
-	total_count: int
-	limit: int
-	offset: int
-	items: List[ProductShort]
-	model_config = ConfigDict(from_attributes=True)
 
 
 class ProductInFavorite(BaseModel):
