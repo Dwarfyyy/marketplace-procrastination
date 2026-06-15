@@ -1,0 +1,88 @@
+name: moderation-ci
+
+on:
+  push:
+    paths:
+      - ".github/workflows/moderation-ci.yml"
+      - "services/moderation/**"
+
+jobs:
+  lint:
+    name: "Moderation: Lint"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/moderation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            services/moderation/uv.lock
+            services/moderation/pyproject.toml
+
+      - name: Create .env from secret
+        env:
+          MODERATION_ENV_FILE: ${{ secrets.MODERATION_ENV_FILE }}
+        run: |
+          if [ -n "$MODERATION_ENV_FILE" ]; then
+            printf '%s' "$MODERATION_ENV_FILE" > .env
+          else
+            cp .env.example .env
+          fi
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint
+        run: make check
+
+  test:
+    name: "Moderation: Tests"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/moderation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            services/moderation/uv.lock
+            services/moderation/pyproject.toml
+
+      - name: Create .env from secret
+        env:
+          MODERATION_ENV_FILE: ${{ secrets.MODERATION_ENV_FILE }}
+        run: |
+          if [ -n "$MODERATION_ENV_FILE" ]; then
+            printf '%s' "$MODERATION_ENV_FILE" > .env
+          else
+            cp .env.example .env
+          fi
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Test
+        run: make test
