@@ -571,3 +571,146 @@ Django ORM), что усложняет интеграцию без выигры�
 `cart.items`, что не критично, но не даёт выигрыша по сравнению с таблицей в
 основной БД, которая уже есть и транзакционно согласована с обновлением
 `cart.items`.
+
+## B2C-13. Финальное списание резерва при доставке (fulfill) {#b2c-13-fulfill}
+
+### Контекст
+
+Когда заказ доставлен покупателю, товар физически выбыл со склада навсегда —
+в отличие от отмены ([B2C-11](#b2c-11-cancel-order)), где товар остаётся на
+складе и `active_quantity` восстанавливается, здесь нужно только **списать**
+`reserved_quantity`, выставленный при резерве на checkout
+([B2C-9, шаг 6](#b2c-9-checkout)). Без этого списания `reserved_quantity`
+бесконечно растёт с каждым доставленным заказом: продавец в B2B видит
+заниженный доступный остаток (`active_quantity`, который не меняется этим
+шагом) и завышенный "висящий" резерв, что мешает ему размещать новые позиции.
+
+Как и в [B2C-11](#b2c-11-cancel-order) и [B2C-9, "B2B недоступен"](#b2b-недоступен),
+"B2B"-каталог в этой сборке — таблицы `catalog.products`/`catalog.skus` в той
+же БД. `fulfill` — это списание `reserved_quantity` по строкам `Sku`,
+соответствующим `OrderItem` заказа.
+
+Откатывать `DELIVERED` нельзя: если `fulfill` падает, заказ остаётся
+`DELIVERED`, а списание резерва повторяется асинхронным ретраем — в отличие
+от unreserve при отмене, здесь "откат" в принципе не имеет смысла (товар уже
+у покупателя).
+
+### Триггер перехода в `DELIVERED`
+
+`POST /api/v1/events/order-delivered` — service-to-service эндпоинт (по
+аналогии с `POST /api/v1/events/product`, [B2C-12](#b2c-12-handle-events)),
+защищён заголовком `X-Service-Key`. Вызывается службой
+доставки/логистики, когда заказ физически передан покупателю. Тело —
+`{"order_id": "<uuid>"}`.
+
+См. ADR ниже — почему выбран отдельный service-to-service эндпоинт, а не
+Django Admin action или `post_save`-сигнал на модели.
+
+### Алгоритм (`POST /api/v1/events/order-delivered`)
+
+1. Найти заказ по `order_id` (`order_crud.get_order_by_id`, без привязки к
+   `buyer_id` — это service-to-service вызов, а не запрос покупателя). Если
+   не найден — `404 NOT_FOUND`.
+2. Если `order.status == CANCELLED` — `409 DELIVER_NOT_ALLOWED` (доставка
+   отменённого заказа невозможна).
+3. Если `order.status != DELIVERED` — записать
+   `OrderStatusHistory(status=DELIVERED)`, `order.status = DELIVERED`,
+   зафиксировать транзакцию. Если заказ уже был `DELIVERED` (повторный вызов
+   события) — шаг пропускается, статус не меняется повторно.
+4. **Идемпотентность fulfill**: если `order.fulfilled_at` уже заполнен —
+   `fulfill` не выполняется повторно, ответ `200` с текущим `OrderResponse`
+   без изменений (`repeated_fulfill_idempotent`).
+5. **Fulfill в B2B**: для каждого `OrderItem` заблокировать соответствующий
+   `Sku` (`SELECT ... FOR UPDATE`, как в unreserve) и применить
+   `reserved_quantity = max(0, reserved_quantity - quantity)`.
+   `active_quantity` не меняется. Установить `order.fulfilled_at = now()`,
+   зафиксировать транзакцию.
+6. **Исход A — fulfill OK**: `200` с `OrderResponse` (`status = DELIVERED`,
+   `fulfilled_at` заполнен).
+7. **Исход B — fulfill упал** (`SQLAlchemyError` при обращении к
+   `catalog.skus`, по аналогии с [B2C-9, "B2B недоступен"](#b2b-недоступен)):
+   - Транзакция fulfill откатывается, `order.fulfilled_at` остаётся `NULL`.
+   - Переход в `DELIVERED` на шаге 3 **не откатывается** — заказ остаётся
+     `DELIVERED` (товар уже у покупателя, откат статуса не имеет смысла).
+   - Ошибка логируется (`logger.exception`) для последующего ретрая.
+   - Вернуть `200` с `OrderResponse` (`status = DELIVERED`,
+     `fulfilled_at = null`) — служба доставки не должна повторять весь вызов
+     события в цикле; списание резерва — внутренняя задача B2C.
+8. Асинхронный retry (вне HTTP-запроса, аналогично ретраю
+   `CANCEL_PENDING` в [B2C-11](#b2c-11-cancel-order)) выбирает все заказы
+   `status = DELIVERED AND fulfilled_at IS NULL` и повторяет fulfill для
+   каждого.
+
+### Edge cases
+
+- **`order_id` не существует** → `404 NOT_FOUND`.
+- **Заказ `CANCELLED`** → `409 DELIVER_NOT_ALLOWED`.
+- **Повторный вызов события для уже фулфилленного заказа** →  `200`, без
+  повторного списания `reserved_quantity` (`repeated_fulfill_idempotent`).
+- **Списание резерва падает** → заказ остаётся `DELIVERED`,
+  `fulfilled_at = null`, ошибка залогирована, ретрай — асинхронный
+  (`fulfill_failure_retried_asynchronously`).
+- **Заказ ещё не в `DELIVERED`** (`PAID`/`ASSEMBLING`/`DELIVERING`) →
+  переход в `DELIVERED` + fulfill в одном вызове
+  (`delivered_status_triggers_fulfill_to_b2b`).
+
+### Сценарии (тесты)
+
+- `delivered_status_triggers_fulfill_to_b2b`
+  (`test_delivered_status_triggers_fulfill_to_b2b`) — happy path: заказ в
+  `PAID`/`DELIVERING` → `POST /events/order-delivered` → `200`, статус
+  `DELIVERED`, `reserved_quantity` каждого SKU из `OrderItem` уменьшен на
+  `quantity`, `fulfilled_at` заполнен.
+- `fulfill_failure_retried_asynchronously`
+  (`test_fulfill_failure_retried_asynchronously`) — списание резерва падает
+  с `SQLAlchemyError` → `200`, статус `DELIVERED`, `fulfilled_at = null`,
+  ошибка залогирована; последующий ретрай (`retry_pending_fulfillments`)
+  успешно списывает резерв и заполняет `fulfilled_at`.
+- `repeated_fulfill_idempotent`
+  (`test_repeated_fulfill_idempotent`) — повторный вызов с тем же
+  `order_id` после успешного fulfill → `200`, `reserved_quantity` не меняется
+  повторно (мок B2B не вызывается повторно).
+
+### ADR — триггер перехода в `DELIVERED` и вызова fulfill
+
+Рассмотрены три варианта реализации триггера:
+
+1. **Django Admin action** — оператор склада вручную помечает заказ
+   "доставлен" через админку, action вызывает `fulfill`.
+2. **`post_save`-сигнал на модели `Order`** — при любом сохранении `Order` с
+   `status = DELIVERED` сигнал вызывает `fulfill`.
+3. **Отдельный service-to-service эндпоинт** (`POST
+   /api/v1/events/order-delivered`, защищён `X-Service-Key`, по аналогии с
+   `POST /api/v1/events/product` из [B2C-12](#b2c-12-handle-events)) —
+   выбрано.
+
+Критерии: (а) риск случайного двойного вызова `fulfill` и (б) возможность
+тестирования без поднятия Django Admin.
+
+**Выбран вариант 3**. По критерию (а) риск двойного вызова одинаков для всех
+трёх вариантов и закрывается одинаково — идемпотентность через
+`order.fulfilled_at` (шаг 4 алгоритма), а не выбором триггера; но вариант 3
+явный: один HTTP-вызов = одна попытка `fulfill`, тогда как `post_save`-сигнал
+(вариант 2) срабатывает на **любое** сохранение `Order` с `status =
+DELIVERED`, включая повторные `db.add(order)`/`flush()` в той же транзакции
+или несвязанные обновления полей того же заказа — это увеличивает поверхность
+случайных повторных вызовов, которые затем приходится гасить тем же
+`fulfilled_at`. По критерию (б) вариант 3 тестируется напрямую через
+`AsyncClient.post(...)` с `X-Service-Key`, как уже сделано для
+`/events/product` — без зависимости от Django Admin, которого в этой сборке
+(FastAPI/SQLAlchemy) нет вовсе, что делает вариант 1 неприменимым без
+отдельной админ-панели.
+
+Вариант 2 (`post_save`-сигнал) был бы органичен для Django ORM
+(`@receiver(post_save, sender=Order)`), но в SQLAlchemy его аналог — ORM
+event listener (`@event.listens_for(Order, "after_update")`) — выполняется
+синхронно внутри `flush()`, что усложняет вызов async I/O (`fulfill`
+обращается к БД через `AsyncSession`) и тестирование в изоляции от остального
+кода, сохраняющего `Order`.
+
+На первой итерации (этот PR) `fulfill` выполняется синхронно внутри
+обработчика события (fire-and-forget с логом ошибки при падении, без
+отдельного retry-воркера/cron) — `retry_pending_fulfillments` реализована как
+функция-сервис, готовая к вызову из периодической задачи; подключение к
+cron/scheduler — отдельная задача, аналогично нерешённому пункту
+`retry_pending_cancellations` из [B2C-11](#b2c-11-cancel-order).

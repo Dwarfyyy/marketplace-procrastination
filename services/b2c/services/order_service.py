@@ -19,6 +19,7 @@ from exceptions.order import (
 	IdempotencyConflictError,
 	InvalidIdempotencyKeyError,
 	OrderNotCancelableError,
+	OrderNotDeliverableError,
 	OrderNotFoundError,
 	PaymentMethodNotFoundError,
 	ReserveFailedError,
@@ -237,6 +238,51 @@ async def cancel_order(
 	order_updated = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
 
 	return schemas_builder.build_order_response(order_updated)
+
+
+async def deliver_order(db: AsyncSession, order_id: uuid.UUID) -> OrderResponse:
+	order = await order_crud.get_order_by_id(db, order_id)
+	if order is None:
+		raise OrderNotFoundError()
+
+	if order.status == OrderStatusEnum.CANCELLED:
+		raise OrderNotDeliverableError()
+
+	if order.status != OrderStatusEnum.DELIVERED:
+		await order_crud.change_order_status(
+			db, order.id, OrderStatusEnum.DELIVERED, None
+		)
+		await db.commit()
+		order = await order_crud.get_order_by_id(db, order_id)
+
+	if order.fulfilled_at is None:
+		now = datetime.now(timezone.utc)
+		try:
+			await order_crud.fulfill_order_items(db, order, now)
+			await db.commit()
+		except SQLAlchemyError:
+			await db.rollback()
+			logger.exception(
+				"Fulfill failed for order %s, will retry asynchronously", order_id
+			)
+
+	order_updated = await order_crud.get_order_by_id(db, order_id)
+	return schemas_builder.build_order_response(order_updated)
+
+
+async def retry_pending_fulfillments(db: AsyncSession) -> int:
+	orders = await order_crud.get_orders_pending_fulfillment(db)
+	now = datetime.now(timezone.utc)
+	fulfilled_count = 0
+	for order in orders:
+		try:
+			await order_crud.fulfill_order_items(db, order, now)
+			await db.commit()
+			fulfilled_count += 1
+		except SQLAlchemyError:
+			await db.rollback()
+			logger.exception("Retry fulfill failed for order %s", order.id)
+	return fulfilled_count
 
 
 async def get_order_by_id_for_buyer(
