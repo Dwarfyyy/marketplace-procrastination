@@ -6,8 +6,9 @@ info:
     B2B (US-MOD-01): идемпотентный приём `PRODUCT_CREATED` / `PRODUCT_EDITED`
     / `PRODUCT_DELETED` и переходы карточки модерации между статусами
     `PENDING` / `IN_REVIEW` / `MODERATED` / `BLOCKED` / `HARD_BLOCKED` /
-    `ARCHIVED`.
-  version: 0.1.0
+    `ARCHIVED`, а также одобрение товара модератором (US-MOD-03):
+    `IN_REVIEW` → `MODERATED` и исходящее событие `MODERATED` для B2B.
+  version: 0.2.0
 
 servers:
   - url: /api/v1
@@ -75,6 +76,91 @@ paths:
                 code: VALIDATION_ERROR
                 message: "Request validation failed"
 
+  /cards/{card_id}/approve:
+    post:
+      summary: Одобрение карточки товара модератором
+      description: >
+        Переводит карточку из `IN_REVIEW` в `MODERATED` и публикует исходящее
+        событие `MODERATED` для B2B (`POST /api/v1/moderation/events`,
+        см. `services/b2b/docs/US-B2B-09.md`).
+
+        Предусловия:
+        - карточка существует;
+        - `card.moderator_id` совпадает с `user_id` из токена — иначе
+          `403 FORBIDDEN`;
+        - карточка в статусе `IN_REVIEW` — иначе `409 CONFLICT` (например,
+          продавец отредактировал товар во время проверки, и карточка
+          вернулась в `PENDING`);
+        - у товара есть хотя бы один SKU (`json_after.skus` непусто) — иначе
+          `409 CONFLICT`.
+
+        Исходящее событие `MODERATED` идемпотентно: повторная доставка одного
+        и того же `idempotency_key` не приводит к повторной публикации в
+        каталоге (см. `flows/moderation-flows.md#approve-product`).
+      operationId: approveCard
+      tags:
+        - cards
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: card_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Карточка переведена в `MODERATED`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApproveCardResponse"
+        "401":
+          description: Отсутствует или неверен `Authorization: Bearer`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing bearer token"
+        "403":
+          description: Карточка закреплена за другим модератором
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: FORBIDDEN
+                message: "Card is assigned to a different moderator"
+        "404":
+          description: Карточка не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Moderation card not found"
+        "409":
+          description: >
+            Карточка не в `IN_REVIEW` (например, вернулась в `PENDING` после
+            правки продавца) или у товара нет SKU
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notInReview:
+                  value:
+                    code: CONFLICT
+                    message: "Card is not in IN_REVIEW status"
+                missingSku:
+                  value:
+                    code: CONFLICT
+                    message: "Product has no SKUs and cannot be approved"
+
 components:
   securitySchemes:
     serviceKeyAuth:
@@ -84,6 +170,13 @@ components:
       description: >
         Service-to-service ключ для вызовов от B2B. Не связан с
         аутентификацией пользователей (JWT).
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        JWT модератора (claim `user_id`), как в других пользовательских
+        эндпоинтах NeoMarket. Не связан с `X-Service-Key`.
 
   schemas:
     ErrorResponse:
@@ -152,6 +245,18 @@ components:
           format: date-time
         payload:
           $ref: "#/components/schemas/ProductEventPayload"
+
+    ApproveCardResponse:
+      type: object
+      required:
+        - card_id
+        - status
+      properties:
+        card_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/ModerationCardStatus"
 
     ProductEventResponse:
       type: object

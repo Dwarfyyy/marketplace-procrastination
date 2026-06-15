@@ -29,6 +29,9 @@ class ModerationCard(Base):
 	)
 	product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True)
 	seller_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+	moderator_id: Mapped[uuid.UUID | None] = mapped_column(
+		UUID(as_uuid=True), nullable=True
+	)
 	status: Mapped[ModerationCardStatus] = mapped_column(
 		Enum(ModerationCardStatus, name="moderationcardstatusenum"),
 		default=ModerationCardStatus.PENDING,

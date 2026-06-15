@@ -3,8 +3,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api.cards import router as cards_router
 from api.events import router as events_router
 from core.config import settings
+from exceptions.auth import InvalidTokenError
 from middlewares.service_key_verification import verify_service_key
 
 app = FastAPI(
@@ -35,6 +37,16 @@ async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONR
 	)
 
 
+@app.exception_handler(InvalidTokenError)
+async def invalid_token_exception_handler(
+	_request: Request, exc: InvalidTokenError
+) -> JSONResponse:
+	return JSONResponse(
+		status_code=401,
+		content={"code": "UNAUTHORIZED", "message": str(exc)},
+	)
+
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(
 	_request: Request, exc: RequestValidationError
@@ -60,6 +72,7 @@ app.add_middleware(
 app.middleware("http")(verify_service_key)
 
 app.include_router(events_router, prefix="/api/v1")
+app.include_router(cards_router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -65,7 +65,7 @@ async def db_session(
 			await session.execute(
 				text(
 					"TRUNCATE TABLE moderation.product_events_processed, "
-					"moderation.cards CASCADE"
+					"moderation.outbox_events, moderation.cards CASCADE"
 				)
 			)
 			await session.commit()
@@ -84,23 +84,30 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 	from main import (
 		app as fastapi_app,
 		http_exception_handler,
+		invalid_token_exception_handler,
 		request_validation_exception_handler,
 	)
 
 	from fastapi import FastAPI, HTTPException
 	from fastapi.exceptions import RequestValidationError
 	from fastapi.middleware.cors import CORSMiddleware
+	from api.cards import router as cards_router
 	from api.events import router as events_router
 	from core.config import settings as app_settings
+	from exceptions.auth import InvalidTokenError
 	from middlewares.service_key_verification import verify_service_key
 
 	app_settings.B2B_SERVICE_KEY = "test-b2b-service-key"
+	app_settings.SECRET_KEY = "test-secret-key"
+	app_settings.ALGORITHM = "HS256"
+	app_settings.B2B_MODERATION_SERVICE_KEY = "test-moderation-service-key"
 
 	test_app = FastAPI(debug=False)
 	test_app.add_exception_handler(HTTPException, http_exception_handler)
 	test_app.add_exception_handler(
 		RequestValidationError, request_validation_exception_handler
 	)
+	test_app.add_exception_handler(InvalidTokenError, invalid_token_exception_handler)
 	test_app.middleware("http")(verify_service_key)
 	test_app.add_middleware(
 		CORSMiddleware,
@@ -110,6 +117,7 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 		allow_headers=["*"],
 	)
 	test_app.include_router(events_router, prefix="/api/v1")
+	test_app.include_router(cards_router, prefix="/api/v1")
 	test_app.dependency_overrides[core_db.get_db] = override_get_db
 	fastapi_app.dependency_overrides[core_db.get_db] = override_get_db
 

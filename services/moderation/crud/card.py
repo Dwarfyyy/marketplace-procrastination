@@ -17,6 +17,13 @@ async def lock_card_by_product(
 	return result.scalar_one_or_none()
 
 
+async def lock_card_by_id(db: AsyncSession, card_id: uuid.UUID) -> ModerationCard | None:
+	result = await db.execute(
+		select(ModerationCard).where(ModerationCard.id == card_id).with_for_update()
+	)
+	return result.scalar_one_or_none()
+
+
 def create_card(
 	db: AsyncSession,
 	*,
