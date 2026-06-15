@@ -55,6 +55,7 @@ class CartItem(Base):
 
 	quantity: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 	unit_price_at_add: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	unavailable_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 	created_at: Mapped[datetime] = mapped_column(
 		DateTime(timezone=True), server_default=func.now()
 	)

@@ -238,6 +238,53 @@ paths:
                 code: NOT_FOUND
                 message: "Order not found"
 
+  /events/product:
+    post:
+      summary: Событие об изменении товара от B2B
+      description: >
+        Принимает события о товарах от B2B (`PRODUCT_BLOCKED`,
+        `PRODUCT_DELETED`, `SKU_OUT_OF_STOCK`) и обновляет
+        `unavailable_reason` у позиций корзин (`cart.items`) с указанными
+        `sku_id`. Заказы (`orders`) не затрагиваются — цены и состав уже
+        оформленных заказов зафиксированы (см. checkout).
+
+        Идемпотентность по `idempotency_key` события: повторный вызов с тем
+        же ключом (например, retry от B2B после таймаута) возвращает
+        `processed: false` без побочных эффектов.
+
+        Эндпоинт защищён заголовком `X-Service-Key` (service-to-service,
+        как `POST /api/v1/events/moderation` в B2B) — без него или с неверным
+        ключом `401 UNAUTHORIZED`.
+      operationId: receiveProductEvent
+      tags:
+        - events
+      security:
+        - serviceKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductEventRequest"
+      responses:
+        "200":
+          description: >
+            Событие обработано (или повторный вызов с тем же
+            `idempotency_key` — без побочных эффектов)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductEventResponse"
+        "401":
+          description: Отсутствует или неверен `X-Service-Key`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Invalid or missing service key"
+
   /orders/{order_id}/cancel:
     post:
       summary: Отменить заказ
@@ -303,6 +350,13 @@ components:
         buyer_id извлекается из claims токена middleware'ом после проверки
         подписи и активной сессии. buyer_id из тела запроса не используется —
         защита от IDOR.
+    serviceKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+      description: >
+        Service-to-service ключ для вызовов от B2B (например, доставки
+        событий о товарах). Не связан с покупательской аутентификацией.
 
   schemas:
     ErrorResponse:
@@ -492,6 +546,72 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    ProductEventPayload:
+      type: object
+      required:
+        - product_id
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        sku_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        sku_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Альтернатива `sku_ids` для событий с одним SKU (напр.
+            `SKU_OUT_OF_STOCK`)
+        hard_block:
+          type: boolean
+          default: false
+
+    ProductEventRequest:
+      type: object
+      required:
+        - event_type
+        - idempotency_key
+        - occurred_at
+        - payload
+      properties:
+        event_type:
+          type: string
+          enum:
+            - PRODUCT_BLOCKED
+            - PRODUCT_DELETED
+            - SKU_OUT_OF_STOCK
+        idempotency_key:
+          type: string
+          format: uuid
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          $ref: "#/components/schemas/ProductEventPayload"
+
+    ProductEventResponse:
+      type: object
+      required:
+        - idempotency_key
+        - processed
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        processed:
+          type: boolean
+          description: >
+            `false`, если событие с этим `idempotency_key` уже было
+            обработано ранее (повтор без побочных эффектов)
+        updated_count:
+          type: integer
+          minimum: 0
+          description: Количество обновлённых строк `cart.items`
 
     PaginatedOrders:
       type: object
