@@ -1,5 +1,6 @@
 import uuid
 from httpx import AsyncClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 import pytest
 from tests.integration.order.conftest import OrderData
@@ -23,6 +24,32 @@ async def test_cancel_paid_order_transitions_to_cancelled(
 	assert body["status"] == "CANCELLED"
 	assert body["status_history"][0]["status"] == "PAID"
 	assert body["status_history"][1]["status"] == "CANCELLED"
+
+
+async def test_unreserve_failure_transitions_to_cancel_pending(
+	client: AsyncClient,
+	db_session: AsyncSession,
+	order_data: OrderData,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	async def _raise_unavailable(*args, **kwargs):
+		raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+	monkeypatch.setattr(
+		"services.order_service.order_crud.unreserve_order_items",
+		_raise_unavailable,
+	)
+
+	response = await client.post(
+		f"/api/v1/orders/{order_data.order.id}/cancel",
+		headers=await auth_headers(order_data.order.buyer_id, db_session),
+	)
+	assert response.status_code == 200
+	body = response.json()
+	assert body["id"] == str(order_data.order.id)
+	assert body["status"] == "CANCEL_PENDING"
+	assert body["status_history"][0]["status"] == "PAID"
+	assert body["status_history"][1]["status"] == "CANCEL_PENDING"
 
 
 async def test_other_user_order_returns_404(

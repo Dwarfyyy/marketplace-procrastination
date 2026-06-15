@@ -315,3 +315,147 @@ middleware) — никогда из query-параметров или тела �
 только в `crud/order.py` для двух похожих функций (`get_order_by_id_for_buyer`,
 `get_buyer_orders`), и выделение зависимости добавило бы непрямую косвенность
 без выигрыша.
+
+## B2C-11. Отмена заказа {#b2c-11-cancel-order}
+
+### Контекст
+
+Покупатель передумал — это его право, пока заказ не ушёл в сборку. Отмена
+освобождает резерв, выставленный на шаге 5 [B2C-9](#b2c-9-checkout)
+(`active_quantity += quantity`, `reserved_quantity -= quantity` по каждому
+`OrderItem`).
+
+Это операция с двумя зависимостями: смена статуса заказа в своей БД (всегда
+доступна) и возврат резерва в "B2B"-каталоге (может быть недоступен — см.
+[B2C-9, "B2B недоступен"](#b2b-недоступен)). Эти две зависимости **не**
+должны быть атомарны с точки зрения ответа покупателю: если откат резерва
+падает, покупатель всё равно должен увидеть, что его *намерение отменить*
+принято — нельзя отвечать `503`/«попробуйте позже» на отмену, иначе зависший
+резерв продолжит блокировать остаток на складе, а покупатель не получит
+обратной связи и может повторить попытку, усугубляя проблему.
+
+### Идентификация пользователя и IDOR
+
+`POST /api/v1/orders/{order_id}/cancel` находится под
+`Authorization: Bearer <token>` (см. `PRIVATE_PATHS_PREFIXES`). `buyer_id` —
+только из `request.state.user_id`. Без `Authorization` → `401 UNAUTHORIZED`.
+
+Поиск заказа использует тот же принцип, что и [B2C-10](#idor-защита-всегда-404-никогда-403):
+`select(Order).where(Order.id == order_id, Order.buyer_id == buyer_id)`. Если
+заказ не найден или принадлежит другому покупателю — `404 NOT_FOUND` в обоих
+случаях (никогда `403`).
+
+### Допустимые статусы для отмены
+
+Отмена разрешена только из `CREATED` и `PAID` — заказ ещё не передан на
+сборку, товар физически на складе, резерв можно безопасно вернуть. Любой
+другой статус (`ASSEMBLING`, `DELIVERING`, `DELIVERED`, `CANCELLED`,
+`CANCEL_PENDING`) → `409 CANCEL_NOT_ALLOWED`.
+
+### Алгоритм (`POST /api/v1/orders/{order_id}/cancel`)
+
+1. Найти заказ по `(order_id, buyer_id)` — если не найден, `404 NOT_FOUND`.
+2. Проверить `order.status in (CREATED, PAID)` — иначе `409
+   CANCEL_NOT_ALLOWED`.
+3. **Unreserve в B2B**: для каждого `OrderItem` заказа заблокировать
+   соответствующий `Sku` (`SELECT ... FOR UPDATE`) и вернуть резерв:
+   `active_quantity += quantity`, `reserved_quantity = max(0,
+   reserved_quantity - quantity)`. Выполняется в той же транзакционной
+   обвязке, что и резерв при checkout (`begin_nested`/`begin`).
+4. **Исход A — unreserve OK**: записать `OrderStatusHistory(status=CANCELLED,
+   reason=<тело запроса>.reason)`, `order.status = CANCELLED`. Вернуть `200`
+   с `OrderResponse` (статус `CANCELLED`).
+5. **Исход B — unreserve упал** (`SQLAlchemyError` при обращении к таблицам
+   `catalog.*`, по аналогии с [B2C-9 "B2B недоступен"](#b2b-недоступен)):
+   - **Не** возвращать `503`/ошибку покупателю — намерение отменить заказ
+     принято.
+   - Записать `OrderStatusHistory(status=CANCEL_PENDING, reason=<...>.reason)`,
+     `order.status = CANCEL_PENDING`.
+   - Залогировать ошибку для последующего ретрая (на первой итерации — без
+     фактического retry-воркера, см. ADR ниже).
+   - Вернуть `200` с `OrderResponse` (статус `CANCEL_PENDING`) — покупатель
+     видит, что заказ в процессе отмены.
+6. Асинхронный retry (вне HTTP-запроса) повторяет unreserve для заказов в
+   `CANCEL_PENDING` и переводит их в `CANCELLED` после успешного возврата
+   резерва.
+
+### Edge cases
+
+- **Без `Authorization`** → `401 UNAUTHORIZED`.
+- **`order_id` не существует или принадлежит другому покупателю** → `404
+  NOT_FOUND` (`other_user_order_returns_404`).
+- **Заказ в `ASSEMBLING` (или любом статусе кроме `CREATED`/`PAID`)** → `409
+  CANCEL_NOT_ALLOWED` с текущим статусом в сообщении
+  (`cancel_assembling_order_returns_409`).
+- **Unreserve в B2B падает** (БД каталога недоступна) → заказ переходит в
+  `CANCEL_PENDING`, `200 OK` (`unreserve_failure_transitions_to_cancel_pending`).
+- **Happy path** (`CREATED`/`PAID` → unreserve OK) → `200 OK`, статус
+  `CANCELLED` (`cancel_paid_order_transitions_to_cancelled`).
+
+### Сценарии (тесты)
+
+- `cancel_paid_order_transitions_to_cancelled`
+  (`test_cancel_paid_order_transitions_to_cancelled`) — happy path: заказ в
+  `PAID` → `200`, статус `CANCELLED`, `status_history` содержит переход
+  `PAID → CANCELLED`.
+- `unreserve_failure_transitions_to_cancel_pending`
+  (`test_unreserve_failure_transitions_to_cancel_pending`) — unreserve падает
+  с `SQLAlchemyError` → `200`, статус `CANCEL_PENDING`, `status_history`
+  содержит переход `PAID → CANCEL_PENDING`.
+- `cancel_assembling_order_returns_409`
+  (`test_cancel_assembling_order_returns_409`) — заказ в `ASSEMBLING` → `409
+  CANCEL_NOT_ALLOWED`.
+- `other_user_order_returns_404` (`test_other_user_order_returns_404`) —
+  IDOR: запрос от имени другого покупателя → `404 NOT_FOUND` (не `403`).
+- `test_cancel_order_not_authorized_returns_401` — без `Authorization` →
+  `401`.
+
+### ADR — асинхронный retry unreserve для `CANCEL_PENDING`
+
+Рассмотрены три варианта реализации фонового ретрая unreserve для заказов в
+`CANCEL_PENDING`:
+
+1. **Celery task с exponential backoff** — отдельный воркер (Celery +
+   broker, напр. Redis/RabbitMQ), задача `retry_unreserve(order_id)`
+   ставится в очередь при падении unreserve и повторяется с растущим
+   интервалом до успеха.
+2. **Management command по cron** — периодический скрипт
+   (`manage.py retry_pending_cancellations`), запускаемый внешним
+   cron/systemd-timer, выбирает все заказы `CANCEL_PENDING` и повторяет
+   unreserve для каждого.
+3. **Django Q / встроенная очередь задач на той же БД** — задачи хранятся в
+   таблице той же БД (без внешнего broker), воркер-процесс читает их и
+   выполняет.
+
+Критерии: (а) сложность настройки окружения (нужен ли отдельный
+broker/воркер) и (б) гарантия выполнения при перезапуске сервиса (не теряются
+ли заказы `CANCEL_PENDING`, если воркер/брокер падает между постановкой задачи
+и её выполнением).
+
+**Выбран вариант 2** (management command по cron). По критерию (а) он не
+требует ни broker'а, ни отдельного воркер-процесса — только периодический
+запуск уже существующего Python-окружения сервиса, что для текущей сборки
+(без Redis/RabbitMQ в инфраструктуре) минимизирует новые зависимости. По
+критерию (б) он по конструкции устойчив к перезапускам: ретрай не зависит от
+"задачи в очереди", которая могла быть потеряна при падении broker'а — на
+каждом тике cron просто читает текущее состояние БД (`status =
+CANCEL_PENDING`) и пытается продвинуть **все** такие заказы, то есть состояние
+полностью восстанавливается из БД, а не из очереди.
+
+Вариант 1 (Celery) дал бы более точный контроль над backoff
+(экспоненциальные интервалы на уровне отдельной задачи, а не фиксированный тик
+cron), но требует поднятия brokera и воркера — для сценария "редкие падения
+unreserve, объём заказов в `CANCEL_PENDING` невелик" это избыточная
+инфраструктурная сложность. Он также хуже по критерию (б) без дополнительной
+настройки: задача Celery, поставленная в очередь и не подтверждённая до
+перезапуска broker'а, может быть потеряна, если не настроены persistence и
+acks_late отдельно.
+
+Вариант 3 (Django Q) занимает промежуточное положение — задачи переживают
+перезапуск (хранятся в БД), но фреймворк специфичен для Django и добавляет
+зависимость, не используемую остальным сервисом (FastAPI/SQLAlchemy здесь, не
+Django ORM), что усложняет интеграцию без выигрыша по сравнению с вариантом 2.
+
+На первой итерации (этот PR) реализован только переход в `CANCEL_PENDING` с
+логированием ошибки unreserve — без фактического retry-воркера/cron-команды
+(scaffold). Ретрай — отдельная задача.

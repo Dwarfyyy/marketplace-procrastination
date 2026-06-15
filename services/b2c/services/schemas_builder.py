@@ -158,6 +158,13 @@ def build_catalog_product_cards(
 	]
 
 
+def _cancel_reason(order: Order) -> str | None:
+	for status in reversed(order.status_history):
+		if status.status.value in ("CANCELLED", "CANCEL_PENDING"):
+			return status.reason
+	return None
+
+
 def build_order_response(order: Order) -> OrderResponse:
 	items = []
 	for item in order.items:
@@ -215,6 +222,7 @@ def build_order_response(order: Order) -> OrderResponse:
 			for status in order.status_history
 		],
 		comment=order.comment,
+		cancel_reason=_cancel_reason(order),
 		created_at=order.created_at,
 		paid_at=order.paid_at,
 	)
