@@ -34,29 +34,54 @@ from core.db import get_db
 router = fastapi.APIRouter(prefix="/api/v1/catalog")
 
 
+def _parse_deep_object(query_params, prefix: str) -> dict:
+	"""Parse deepObject-style query params (``prefix[key]=value``) into a dict.
+
+	Repeated keys collapse into a list, matching ``style: deepObject,
+	explode: true`` from the OpenAPI contract.
+	"""
+	open_token = f"{prefix}["
+	result: dict = {}
+	for key, value in query_params.multi_items():
+		if key.startswith(open_token) and key.endswith("]"):
+			inner = key[len(open_token) : -1]
+			if inner in result:
+				if isinstance(result[inner], list):
+					result[inner].append(value)
+				else:
+					result[inner] = [result[inner], value]
+			else:
+				result[inner] = value
+	return result
+
+
 @router.get("/products", response_model=PaginatedCatalogProducts)
 async def get_catalog_products(
+	request: Request,
 	db_session: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
-	category_id: Optional[uuid.UUID] = None,
 	limit: Annotated[int, fastapi.Query(ge=1, le=100)] = 20,
 	offset: Annotated[int, fastapi.Query(ge=0)] = 0,
-	filter: Optional[str] = None,
 	sort: str = "popularity",
 	q: Optional[str] = None,
 ) -> PaginatedCatalogProducts:
-	filters_param = None
-	if filter:
+	# `filter` is a deepObject per the contract: filter[category_id]=...&filter[price_min]=...
+	filter_obj = _parse_deep_object(request.query_params, "filter")
+
+	category_id_raw = filter_obj.pop("category_id", None)
+	category_id: Optional[uuid.UUID] = None
+	if category_id_raw is not None:
 		try:
-			filters_obj = json.loads(filter)
-			filters_param = json.dumps(filters_obj, ensure_ascii=False)
-		except json.JSONDecodeError as e:
+			category_id = uuid.UUID(str(category_id_raw))
+		except (ValueError, TypeError) as e:
 			raise fastapi.HTTPException(
 				status_code=400,
 				detail={
-					"code": "INVALID_FILTER",
-					"message": "Invalid JSON in filter parameter",
+					"code": "INVALID_REQUEST",
+					"message": "filter[category_id] must be a valid UUID",
 				},
 			) from e
+
+	filters_param = json.dumps(filter_obj, ensure_ascii=False) if filter_obj else None
 
 	try:
 		return await product_service.get_products_list(
@@ -192,19 +217,7 @@ async def get_facets(
 	category_id: uuid.UUID,
 	filters: str | None = None,
 ) -> FacetsResponse:
-	qp = request.query_params
-	deep: dict = {}
-	for k, v in qp.multi_items():
-		if k.startswith("filters[") and k.endswith("]"):
-			inner = k[len("filters[") : -1]
-			if inner in deep:
-				if isinstance(deep[inner], list):
-					deep[inner].append(v)
-				else:
-					deep[inner] = [deep[inner], v]
-			else:
-				deep[inner] = v
-
+	deep = _parse_deep_object(request.query_params, "filters")
 	filters_param = json.dumps(deep, ensure_ascii=False) if deep else filters
 
 	try:
