@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core import db
 from exceptions.product import ProductNotFoundError
 from exceptions.sku import SkuNotFoundError
-from schemas.product import Product
 from schemas.sku import Sku as SkuSchema, SkuShort as SkuShortSchema
 from services import product_service, sku_service
 
@@ -98,15 +97,3 @@ async def get_product_skus_short_api(
 		return list(skus_validated)
 	except ProductNotFoundError as err:
 		raise fastapi.HTTPException(status_code=404, detail=str(err)) from err
-
-
-@router.get("/{id}", response_model=Product)
-async def get_product_api(
-	db: Annotated[AsyncSession, fastapi.Depends(db.get_db)], id: uuid.UUID
-) -> Product:
-	try:
-		return await product_service.get_product_by_id(db, id)
-	except ProductNotFoundError as err:
-		raise fastapi.HTTPException(status_code=404, detail=str(err)) from err
-	except Exception as e:
-		raise fastapi.HTTPException(status_code=500, detail=str(e)) from e

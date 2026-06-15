@@ -8,11 +8,11 @@ from fastapi import Request
 import json
 
 from exceptions.banner import BannerNotFoundError, EmptyEventsError
-from exceptions.collection import CollectionNotFoundError
 from exceptions.product import ProductNotFoundError
 from schemas.banner import Banner, BannerEventsRequest
 from schemas.catalog import (
 	CatalogProductCard,
+	CatalogProductDetail,
 	CategoryRef,
 	CategoryTreeNode,
 	PaginatedCatalogProducts,
@@ -22,7 +22,7 @@ from exceptions.category import CategoryNotFoundError
 from core import db
 
 
-from schemas.collection import CollectionProducts, CollectionSummary
+from schemas.collection import Collection
 from services import (
 	banner_service,
 	category_service,
@@ -34,30 +34,54 @@ from core.db import get_db
 router = fastapi.APIRouter(prefix="/api/v1/catalog")
 
 
+def _parse_deep_object(query_params, prefix: str) -> dict:
+	"""Parse deepObject-style query params (``prefix[key]=value``) into a dict.
+
+	Repeated keys collapse into a list, matching ``style: deepObject,
+	explode: true`` from the OpenAPI contract.
+	"""
+	open_token = f"{prefix}["
+	result: dict = {}
+	for key, value in query_params.multi_items():
+		if key.startswith(open_token) and key.endswith("]"):
+			inner = key[len(open_token) : -1]
+			if inner in result:
+				if isinstance(result[inner], list):
+					result[inner].append(value)
+				else:
+					result[inner] = [result[inner], value]
+			else:
+				result[inner] = value
+	return result
+
+
 @router.get("/products", response_model=PaginatedCatalogProducts)
 async def get_catalog_products(
 	request: Request,
 	db_session: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
-	category_id: Optional[uuid.UUID] = None,
 	limit: Annotated[int, fastapi.Query(ge=1, le=100)] = 20,
 	offset: Annotated[int, fastapi.Query(ge=0)] = 0,
 	sort: str = "popularity",
 	q: Optional[str] = None,
 ) -> PaginatedCatalogProducts:
-	qp = request.query_params
-	deep: dict = {}
-	for k, v in qp.multi_items():
-		if k.startswith("filter[") and k.endswith("]"):
-			inner = k[len("filter[") : -1]
-			if inner in deep:
-				if isinstance(deep[inner], list):
-					deep[inner].append(v)
-				else:
-					deep[inner] = [deep[inner], v]
-			else:
-				deep[inner] = v
+	# `filter` is a deepObject per the contract: filter[category_id]=...&filter[price_min]=...
+	filter_obj = _parse_deep_object(request.query_params, "filter")
 
-	filters_param = json.dumps(deep, ensure_ascii=False) if deep else None
+	category_id_raw = filter_obj.pop("category_id", None)
+	category_id: Optional[uuid.UUID] = None
+	if category_id_raw is not None:
+		try:
+			category_id = uuid.UUID(str(category_id_raw))
+		except (ValueError, TypeError) as e:
+			raise fastapi.HTTPException(
+				status_code=400,
+				detail={
+					"code": "INVALID_REQUEST",
+					"message": "filter[category_id] must be a valid UUID",
+				},
+			) from e
+
+	filters_param = json.dumps(filter_obj, ensure_ascii=False) if filter_obj else None
 
 	try:
 		return await product_service.get_products_list(
@@ -193,19 +217,7 @@ async def get_facets(
 	category_id: uuid.UUID,
 	filters: str | None = None,
 ) -> FacetsResponse:
-	qp = request.query_params
-	deep: dict = {}
-	for k, v in qp.multi_items():
-		if k.startswith("filters[") and k.endswith("]"):
-			inner = k[len("filters[") : -1]
-			if inner in deep:
-				if isinstance(deep[inner], list):
-					deep[inner].append(v)
-				else:
-					deep[inner] = [deep[inner], v]
-			else:
-				deep[inner] = v
-
+	deep = _parse_deep_object(request.query_params, "filters")
 	filters_param = json.dumps(deep, ensure_ascii=False) if deep else filters
 
 	try:
@@ -224,31 +236,17 @@ async def get_facets(
 		) from e
 
 
-@router.get("/collections", response_model=list[CollectionSummary])
+@router.get("/collections", response_model=list[Collection])
 async def get_collections(
 	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
-) -> list[CollectionSummary]:
-	"""List active collections (metadata only, without products)."""
-	return await collection_service.get_collection_summaries(db)
+) -> list[Collection]:
+	"""Active collections with their products, batch-enriched from B2B.
 
-
-@router.get("/collections/{collection_id}", response_model=CollectionProducts)
-async def get_collection_products(
-	db: Annotated[AsyncSession, fastapi.Depends(get_db)],
-	collection_id: uuid.UUID,
-) -> CollectionProducts:
-	"""Products of a single collection, batch-enriched from B2B.
-
-	Unavailable products go to ``unavailable_ids`` (not an error); an unknown
-	collection yields ``404``.
+	Each collection embeds available product cards in ``products``; unavailable
+	products (deleted/blocked/under moderation/out of stock) are omitted. No
+	active collections yields ``200`` with an empty array.
 	"""
-	try:
-		return await collection_service.get_collection_products(db, collection_id)
-	except CollectionNotFoundError as e:
-		raise fastapi.HTTPException(
-			status_code=404,
-			detail={"code": "NOT_FOUND", "message": str(e)},
-		) from e
+	return await collection_service.get_collections(db)
 
 
 @router.get("/banners")
@@ -286,6 +284,31 @@ async def post_banner_events(
 			detail={"code": "BANNER_NOT_FOUND", "message": str(e)},
 		) from e
 	return fastapi.Response(status_code=204)
+
+
+@router.get("/products/{product_id}", response_model=CatalogProductDetail)
+async def get_catalog_product_api(
+	db: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
+	product_id: uuid.UUID,
+) -> CatalogProductDetail:
+	"""Get a buyer-facing product card with nested SKUs by product id.
+
+	Args:
+		db (Annotated[AsyncSession, fastapi.Depends]): Database session
+		product_id (uuid.UUID): Product ID
+
+	Returns:
+		CatalogProductDetail: Product detail card
+	"""
+	try:
+		return await product_service.get_product_by_id(db, product_id)
+	except ProductNotFoundError as err:
+		raise fastapi.HTTPException(
+			status_code=404,
+			detail={"code": "NOT_FOUND", "message": str(err)},
+		) from err
+	except Exception as e:
+		raise fastapi.HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get(
