@@ -1,4 +1,5 @@
 from database.models.cart.item import CartItem
+from database.models.cart.product_event import ProductEventProcessed
 from database.models.catalog.base import (
 	Category,
 	Product,
@@ -25,6 +26,7 @@ from database.models.orders.order_item import OrderItem
 
 __all__ = [
 	"CartItem",
+	"ProductEventProcessed",
 	"Category",
 	"Product",
 	"ProductStatusEnum",

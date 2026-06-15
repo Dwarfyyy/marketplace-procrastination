@@ -1,12 +1,15 @@
+import json
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 
 import fastapi
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import db
 from exceptions.product import ProductNotFoundError
 from exceptions.sku import SkuNotFoundError
+from schemas.catalog import PaginatedCatalogProducts
 from schemas.sku import Sku as SkuSchema, SkuShort as SkuShortSchema
 from services import product_service, sku_service
 
@@ -14,7 +17,7 @@ router = fastapi.APIRouter(prefix="/api/v1/products")
 catalog_products_router = fastapi.APIRouter(prefix="/api/v1/catalog/products")
 
 
-@catalog_products_router.get("", response_model=ProductShortListResponse)
+@catalog_products_router.get("", response_model=PaginatedCatalogProducts)
 async def get_product_list_api(
 	db_session: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
 	category_id: Optional[uuid.UUID] = None,
@@ -23,7 +26,7 @@ async def get_product_list_api(
 	filter: Optional[str] = None,
 	sort: str = "popularity",
 	q: Optional[str] = None,
-) -> ProductShortListResponse:
+) -> PaginatedCatalogProducts:
 	filters_param = None
 	if filter:
 		try:

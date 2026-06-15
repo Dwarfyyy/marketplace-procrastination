@@ -94,11 +94,13 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 		breadcrumbs,
 		cart,
 		catalog,
+		events,
 		favorite,
 		subscriptions,
 		orders,
 	)
 	from middlewares.token_verification import verify_token
+	from middlewares.service_key_verification import verify_service_key
 
 	test_app = FastAPI(debug=False)
 	test_app.add_exception_handler(HTTPException, http_exception_handler)
@@ -106,6 +108,7 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 		RequestValidationError, request_validation_exception_handler
 	)
 	test_app.middleware("http")(verify_token)
+	test_app.middleware("http")(verify_service_key)
 	test_app.add_middleware(
 		CORSMiddleware,
 		allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -117,6 +120,7 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 	test_app.include_router(product.catalog_products_router)
 	test_app.include_router(breadcrumbs.router)
 	test_app.include_router(cart.router)
+	test_app.include_router(events.router)
 	test_app.include_router(favorite.router)
 	test_app.include_router(catalog.router)
 	test_app.include_router(subscriptions.router)

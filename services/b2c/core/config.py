@@ -11,6 +11,8 @@ class Settings(BaseSettings):
 	SECRET_KEY: str
 	ALGORITHM: str
 
+	B2B_SERVICE_KEY: str = ""
+
 	model_config = SettingsConfigDict(
 		env_file=".env",
 		env_file_encoding="utf-8",
