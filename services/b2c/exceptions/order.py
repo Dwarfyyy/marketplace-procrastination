@@ -50,3 +50,9 @@ class OrderNotCancelableError(OrderError):
 	"""Order not cancelable error (not created or paid)"""
 
 	pass
+
+
+class OrderNotDeliverableError(OrderError):
+	"""Order can't transition to DELIVERED (already cancelled)"""
+
+	pass
