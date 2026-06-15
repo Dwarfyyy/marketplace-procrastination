@@ -16,7 +16,7 @@ class CategoryRef(BaseModel):
 
 
 class CategoryTreeNode(CategoryRef):
-	children: List[CategoryTreeNode] = Field(default_factory=list)
+	children: List["CategoryTreeNode"] = Field(default_factory=list)
 	model_config = ConfigDict(from_attributes=True)
 
 
