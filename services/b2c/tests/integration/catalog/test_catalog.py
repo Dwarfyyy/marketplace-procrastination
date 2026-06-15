@@ -61,7 +61,7 @@ async def test_catalog_returns_filtered_sorted_products(
 	response = await client.get(
 		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
+			"filter[category_id]": str(category_with_products.category.id),
 		},
 	)
 
@@ -80,7 +80,10 @@ async def test_invalid_sort_returns_400(
 ) -> None:
 	response = await client.get(
 		"/api/v1/catalog/products",
-		params={"category_id": str(category_with_products.category.id), "sort": sort},
+		params={
+			"filter[category_id]": str(category_with_products.category.id),
+			"sort": sort,
+		},
 	)
 	assert response.status_code == 400
 
@@ -91,7 +94,7 @@ async def test_search_description_returns_matching_products(
 	response = await client.get(
 		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
+			"filter[category_id]": str(category_with_products.category.id),
 			"q": "Description 1",
 		},
 	)
@@ -109,7 +112,7 @@ async def test_search_title_returns_matching_products(
 	response = await client.get(
 		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
+			"filter[category_id]": str(category_with_products.category.id),
 			"q": "Product 1",
 		},
 	)
@@ -127,7 +130,7 @@ async def test_short_query_returns_400(
 	response = await client.get(
 		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
+			"filter[category_id]": str(category_with_products.category.id),
 			"q": search,
 		},
 	)
@@ -140,7 +143,7 @@ async def test_empty_results_returns_200(
 	response = await client.get(
 		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
+			"filter[category_id]": str(category_with_products.category.id),
 			"q": "Not exists",
 		},
 	)
@@ -155,7 +158,7 @@ async def test_special_chars_do_not_break_query(
 	response = await client.get(
 		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
+			"filter[category_id]": str(category_with_products.category.id),
 			"q": "!@#$%^&*()",
 		},
 	)
@@ -170,7 +173,7 @@ async def test_products_list_filters_only_visible_products(
 ) -> None:
 	response = await client.get(
 		"/api/v1/catalog/products",
-		params={"category_id": str(visibility_products.category.id)},
+		params={"filter[category_id]": str(visibility_products.category.id)},
 	)
 	assert response.status_code == 200
 	body = response.json()
@@ -195,7 +198,7 @@ async def test_b2b_unavailable_returns_502(
 
 	response = await client.get(
 		"/api/v1/catalog/products",
-		params={"category_id": str(category_with_products.category.id)},
+		params={"filter[category_id]": str(category_with_products.category.id)},
 	)
 
 	assert response.status_code == 502

@@ -9,9 +9,9 @@
 Перечень реализованных эндпоинтов:
 
 - `GET /api/v1/catalog/products`
-  - **Query/Path params**: `category_id` (опционально, UUID), `limit` (default `20`), `offset` (default `0`), `filter` (JSON-строка, опционально), `sort` (default `popularity`, допустимые значения: `price_asc`, `price_desc`, `popularity`, `new`), `q` (опционально, минимум 4 символа после trim)
+  - **Query/Path params**: `filter` (deepObject, `style: deepObject, explode: true` — передаётся как `filter[category_id]=...&filter[price_min]=...`; `category_id` — UUID-ключ внутри `filter` согласно `CatalogFilter`), `limit` (default `20`), `offset` (default `0`), `sort` (default `popularity`, допустимые значения: `price_asc`, `price_desc`, `popularity`, `new`), `q` (опционально, минимум 4 символа после trim)
   - **Код 200**: `PaginatedCatalogProducts` — список карточек `CatalogProductCard` в `items[]` (поля: `id`, `name`, `min_price`, `old_price`, `slug`, `category`, `has_stock`, `rating`, `reviews_count`, `images[]` (`ImageRef`), `seller`), плюс `total_count`, `limit`, `offset`
-  - **Код 400**: `Invalid sort parameter. Allowed: ...` (невалидный параметр сортировки) / `Search query must be at least 4 characters` (поисковый запрос короче 4 символов) / `INVALID_FILTER` (невалидный JSON в `filter`)
+  - **Код 400**: `Invalid sort parameter. Allowed: ...` (невалидный параметр сортировки) / `Search query must be at least 4 characters` (поисковый запрос короче 4 символов) / `filter[category_id] must be a valid UUID` (невалидный UUID в `filter[category_id]`)
   - **Код 502**: `B2B_UNAVAILABLE` (каталог недоступен)
 
 - `GET /api/v1/catalog/facets/`
