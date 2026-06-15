@@ -5,17 +5,15 @@ import os
 
 import aio_pika
 
+from core.db import SessionLocal
+from services.product_events import apply_product_event
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 EXCHANGE = os.getenv("RABBITMQ_EXCHANGE", "neomarket.events")
 QUEUE = os.getenv("RABBITMQ_MODERATION_QUEUE", "moderation.product.events")
-ROUTING_KEY = os.getenv(
-	"RABBITMQ_ROUTING_KEY_MODERATION_PRODUCT", "moderation.product.created"
-)
-
-# TODO: как только доберёмся до сервиса, инициализировать core, docker-compose, uv. # noqa
-# TODO: Также считывать переменные из .env # noqa
+ROUTING_KEY = os.getenv("RABBITMQ_ROUTING_KEY_MODERATION_PRODUCT", "moderation.product.*")
 
 
 def _rabbitmq_url() -> str:
@@ -41,7 +39,8 @@ async def main() -> None:
 			async for message in queue_iter:
 				async with message.process():
 					payload = json.loads(message.body.decode("utf-8"))
-					logger.info("Received moderation event: %s", payload)
+					async with SessionLocal() as db:
+						await apply_product_event(db, payload)
 
 
 if __name__ == "__main__":
