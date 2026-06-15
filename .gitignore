@@ -210,3 +210,6 @@ __marimo__/
 cache/
 
 node_modules
+
+# Local repository workflow notes
+/REPOSITORY_GUIDE.md

@@ -2,12 +2,18 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from crud import outbox as outbox_crud
 from crud import product as product_crud
 from crud import sku as sku_crud
 from database.models.catalog.base import ProductStatusEnum
 from database.models.catalog.variants import Sku
 from exceptions.product import ProductNotFoundError, ProductNotOwnerError
-from exceptions.sku import SkuForbiddenError, SkuNotFoundError, SkuValidationError
+from exceptions.sku import (
+	SkuActiveReservesError,
+	SkuForbiddenError,
+	SkuNotFoundError,
+	SkuValidationError,
+)
 from schemas.sku import (
 	CharacteristicSchema,
 	ImageAttachRequest,
@@ -99,6 +105,12 @@ async def create_sku(db: AsyncSession, data: SkuCreate, seller_id: UUID) -> SkuR
 	if moderation_event == "CREATED" and not sku_images:
 		raise SkuValidationError("at least one image is required for the first SKU")
 
+	json_before = (
+		await product_crud.build_product_snapshot(db, product)
+		if moderation_event == "EDITED"
+		else None
+	)
+
 	sku_payload = data.model_dump()
 	sku_payload["cost_price"] = (
 		sku_payload.get("cost_price")
@@ -113,6 +125,7 @@ async def create_sku(db: AsyncSession, data: SkuCreate, seller_id: UUID) -> SkuR
 		product=product,
 		images=sku_images,
 		moderation_event=moderation_event,
+		json_before=json_before,
 	)
 	return await build_sku_response(db, sku)
 
@@ -159,6 +172,42 @@ async def update_sku(
 	if not updated:
 		raise SkuNotFoundError(f"SKU with id {sku_id} not found")
 	return await build_sku_response(db, updated)
+
+
+async def delete_sku(db: AsyncSession, sku_id: UUID, seller_id: UUID) -> None:
+	pair = await sku_crud.get_sku_and_product_for_update(db, sku_id)
+	if pair is None:
+		raise SkuNotFoundError(f"SKU with id {sku_id} not found")
+
+	sku, product = pair
+	if product.seller_id != seller_id:
+		raise ProductNotOwnerError("SKU does not belong to the authenticated seller")
+	if product.status == ProductStatusEnum.HARD_BLOCKED:
+		raise SkuForbiddenError("Cannot delete SKU of hard-blocked product")
+	if sku.reserved_quantity > 0:
+		raise SkuActiveReservesError("Cannot delete SKU with active reserves")
+
+	emit_out_of_stock = (
+		product.status == ProductStatusEnum.MODERATED and sku.active_quantity > 0
+	)
+	await sku_crud.delete_sku(db, sku)
+
+	is_last_sku = await sku_crud.count_skus_by_product_id(db, product.id) == 0
+	if is_last_sku and product.status == ProductStatusEnum.ON_MODERATION:
+		product.status = ProductStatusEnum.CREATED
+		db.add(product)
+		await outbox_crud.enqueue_moderation_product_event(
+			db,
+			product_id=product.id,
+			seller_id=product.seller_id,
+			event="DELETED",
+		)
+	if emit_out_of_stock:
+		await outbox_crud.enqueue_sku_out_of_stock_event(
+			db, sku_id, product.id, sku.active_quantity
+		)
+
+	await db.commit()
 
 
 async def get_skus_by_product_id(

@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,7 @@ from exceptions.sku import (
 	SkuNotFoundError,
 )
 from schemas.fulfill import FulfillRequest, FulfillResponse
-from schemas.inventory import InventoryItemRequest, InventoryItemResponse
+from schemas.inventory import InventoryItemRequest
 
 
 def _normalize_items(items: list[InventoryItemRequest]) -> list[dict]:
@@ -34,17 +35,11 @@ def _snapshot_skus(skus: list[Sku]) -> list[dict]:
 	]
 
 
-def _build_response(order_id: UUID, items: list[dict]) -> FulfillResponse:
+def _build_response(order_id: UUID, processed_at: datetime) -> FulfillResponse:
 	return FulfillResponse(
 		order_id=order_id,
-		items=[
-			InventoryItemResponse(
-				sku_id=UUID(item["sku_id"]),
-				active_quantity=item["active_quantity"],
-				reserved_quantity=item["reserved_quantity"],
-			)
-			for item in items
-		],
+		status="FULFILLED",
+		processed_at=processed_at,
 	)
 
 
@@ -57,7 +52,7 @@ async def fulfill(db: AsyncSession, request: FulfillRequest) -> FulfillResponse:
 			raise SkuIdempotencyConflictError(
 				"order_id was already fulfilled with a different payload"
 			)
-		return _build_response(request.order_id, existing.result)
+		return _build_response(request.order_id, existing.fulfilled_at)
 
 	sku_ids = [UUID(item["sku_id"]) for item in normalized_items]
 	skus = await fulfill_crud.lock_skus(db, sku_ids)
@@ -80,11 +75,14 @@ async def fulfill(db: AsyncSession, request: FulfillRequest) -> FulfillResponse:
 		db.add(sku)
 
 	result = _snapshot_skus(skus)
-	fulfill_crud.add_fulfilled_order(
+	fulfilled_order = fulfill_crud.add_fulfilled_order(
 		db,
 		request.order_id,
 		normalized_items,
 		result,
 	)
+	await db.flush()
+	await db.refresh(fulfilled_order, attribute_names=["fulfilled_at"])
+	response = _build_response(request.order_id, fulfilled_order.fulfilled_at)
 	await db.commit()
-	return _build_response(request.order_id, result)
+	return response

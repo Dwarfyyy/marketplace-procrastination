@@ -1,7 +1,8 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class InventoryItemRequest(BaseModel):
@@ -9,9 +10,19 @@ class InventoryItemRequest(BaseModel):
 	quantity: int = Field(..., gt=0)
 
 
-class InventoryRequest(BaseModel):
+class ReserveRequest(BaseModel):
 	idempotency_key: UUID
+	order_id: UUID
 	items: list[InventoryItemRequest] = Field(..., min_length=1, max_length=100)
+
+	model_config = ConfigDict(extra="forbid")
+
+
+class InventoryOrderRequest(BaseModel):
+	order_id: UUID
+	items: list[InventoryItemRequest] = Field(..., min_length=1, max_length=100)
+
+	model_config = ConfigDict(extra="forbid")
 
 
 class InventoryItemResponse(BaseModel):
@@ -20,7 +31,13 @@ class InventoryItemResponse(BaseModel):
 	reserved_quantity: int
 
 
-class InventoryResponse(BaseModel):
-	idempotency_key: UUID
-	operation: Literal["RESERVE", "UNRESERVE"]
-	items: list[InventoryItemResponse]
+class ReserveResponse(BaseModel):
+	order_id: UUID
+	status: Literal["RESERVED"]
+	reserved_at: datetime
+
+
+class InventoryOrderResponse(BaseModel):
+	order_id: UUID
+	status: Literal["UNRESERVED"]
+	processed_at: datetime

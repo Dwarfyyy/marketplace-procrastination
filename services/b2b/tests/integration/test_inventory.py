@@ -14,9 +14,27 @@ from tests.integration.conftest import (
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
-def _payload(idempotency_key: uuid.UUID, items: list[tuple[uuid.UUID, int]]) -> dict:
+def _reserve_payload(
+	idempotency_key: uuid.UUID,
+	items: list[tuple[uuid.UUID, int]],
+	order_id: uuid.UUID | None = None,
+) -> dict:
 	return {
 		"idempotency_key": str(idempotency_key),
+		"order_id": str(order_id or uuid.uuid4()),
+		"items": [
+			{"sku_id": str(sku_id), "quantity": quantity}
+			for sku_id, quantity in items
+		],
+	}
+
+
+def _unreserve_payload(
+	order_id: uuid.UUID,
+	items: list[tuple[uuid.UUID, int]],
+) -> dict:
+	return {
+		"order_id": str(order_id),
 		"items": [
 			{"sku_id": str(sku_id), "quantity": quantity}
 			for sku_id, quantity in items
@@ -30,13 +48,19 @@ async def test_reserve_all_skus_succeeds(
 	db_session: AsyncSession,
 ) -> None:
 	first, second = inventory_data.skus
+	order_id = uuid.uuid4()
 	response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(first.id, 3), (second.id, 1)]),
+		json=_reserve_payload(
+			uuid.uuid4(), [(first.id, 3), (second.id, 1)], order_id
+		),
 	)
 
 	assert response.status_code == 200
+	assert response.json()["status"] == "RESERVED"
+	assert response.json()["order_id"] == str(order_id)
+	assert response.json()["reserved_at"]
 	await db_session.refresh(first)
 	await db_session.refresh(second)
 	assert (first.active_quantity, first.reserved_quantity) == (7, 3)
@@ -52,9 +76,9 @@ async def test_partial_insufficient_stock_returns_409_all_rollback(
 ) -> None:
 	first, second = inventory_data.skus
 	response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(first.id, 3), (second.id, 3)]),
+		json=_reserve_payload(uuid.uuid4(), [(first.id, 3), (second.id, 3)]),
 	)
 
 	assert response.status_code == 409
@@ -72,15 +96,15 @@ async def test_idempotent_reserve_returns_200_without_double_deduction(
 ) -> None:
 	sku = inventory_data.skus[0]
 	key = uuid.uuid4()
-	payload = _payload(key, [(sku.id, 4)])
+	payload = _reserve_payload(key, [(sku.id, 4)])
 
 	first_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=payload,
 	)
 	second_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=payload,
 	)
@@ -98,20 +122,21 @@ async def test_idempotent_reserve_returns_original_result_after_unreserve(
 ) -> None:
 	sku = inventory_data.skus[0]
 	reserve_key = uuid.uuid4()
-	reserve_payload = _payload(reserve_key, [(sku.id, 4)])
+	order_id = uuid.uuid4()
+	reserve_payload = _reserve_payload(reserve_key, [(sku.id, 4)], order_id)
 
 	first_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=reserve_payload,
 	)
 	unreserve_response = await client.post(
-		"/api/v1/unreserve",
+		"/api/v1/inventory/unreserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(sku.id, 4)]),
+		json=_unreserve_payload(order_id, [(sku.id, 4)]),
 	)
 	retry_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=reserve_payload,
 	)
@@ -130,15 +155,16 @@ async def test_reused_idempotency_key_with_different_payload_returns_409(
 ) -> None:
 	first, second = inventory_data.skus
 	key = uuid.uuid4()
+	order_id = uuid.uuid4()
 	first_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(key, [(first.id, 1)]),
+		json=_reserve_payload(key, [(first.id, 1)], order_id),
 	)
 	conflict_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(key, [(second.id, 1)]),
+		json=_reserve_payload(key, [(second.id, 1)], order_id),
 	)
 
 	assert first_response.status_code == 200
@@ -153,14 +179,14 @@ async def test_sku_out_of_stock_event_emitted(
 ) -> None:
 	sku = inventory_data.skus[1]
 	key = uuid.uuid4()
-	payload = _payload(key, [(sku.id, 2)])
+	payload = _reserve_payload(key, [(sku.id, 2)])
 	first_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=payload,
 	)
 	retry_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=payload,
 	)
@@ -173,6 +199,7 @@ async def test_sku_out_of_stock_event_emitted(
 	event = result.scalar_one()
 	assert event.routing_key == "b2c.sku.out_of_stock"
 	assert event.payload["payload"]["sku_id"] == str(sku.id)
+	assert event.payload["payload"]["available_quantity"] == 0
 
 
 async def test_unreserve_restores_quantities(
@@ -181,20 +208,24 @@ async def test_unreserve_restores_quantities(
 	db_session: AsyncSession,
 ) -> None:
 	sku = inventory_data.skus[0]
+	order_id = uuid.uuid4()
 	reserve_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(sku.id, 5)]),
+		json=_reserve_payload(uuid.uuid4(), [(sku.id, 5)], order_id),
 	)
 	assert reserve_response.status_code == 200
 
 	unreserve_response = await client.post(
-		"/api/v1/unreserve",
+		"/api/v1/inventory/unreserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(sku.id, 5)]),
+		json=_unreserve_payload(order_id, [(sku.id, 5)]),
 	)
 
 	assert unreserve_response.status_code == 200
+	assert unreserve_response.json()["status"] == "UNRESERVED"
+	assert unreserve_response.json()["order_id"] == str(order_id)
+	assert unreserve_response.json()["processed_at"]
 	await db_session.refresh(sku)
 	assert (sku.active_quantity, sku.reserved_quantity) == (10, 0)
 	assert sku.active_quantity + sku.reserved_quantity == sku.stock_quantity
@@ -206,20 +237,20 @@ async def test_idempotent_unreserve_returns_200_without_double_restore(
 	db_session: AsyncSession,
 ) -> None:
 	sku = inventory_data.skus[0]
+	order_id = uuid.uuid4()
 	reserve_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(sku.id, 5)]),
+		json=_reserve_payload(uuid.uuid4(), [(sku.id, 5)], order_id),
 	)
-	key = uuid.uuid4()
-	payload = _payload(key, [(sku.id, 5)])
+	payload = _unreserve_payload(order_id, [(sku.id, 5)])
 	first_response = await client.post(
-		"/api/v1/unreserve",
+		"/api/v1/inventory/unreserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=payload,
 	)
 	second_response = await client.post(
-		"/api/v1/unreserve",
+		"/api/v1/inventory/unreserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
 		json=payload,
 	)
@@ -238,15 +269,18 @@ async def test_partial_unreserve_conflict_returns_409_all_rollback(
 	db_session: AsyncSession,
 ) -> None:
 	first, second = inventory_data.skus
+	order_id = uuid.uuid4()
 	reserve_response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(first.id, 3), (second.id, 1)]),
+		json=_reserve_payload(
+			uuid.uuid4(), [(first.id, 3), (second.id, 1)], order_id
+		),
 	)
 	response = await client.post(
-		"/api/v1/unreserve",
+		"/api/v1/inventory/unreserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), [(first.id, 2), (second.id, 2)]),
+		json=_unreserve_payload(order_id, [(first.id, 2), (second.id, 2)]),
 	)
 
 	assert reserve_response.status_code == 200
@@ -258,10 +292,40 @@ async def test_partial_unreserve_conflict_returns_409_all_rollback(
 	assert (second.active_quantity, second.reserved_quantity) == (1, 1)
 
 
+async def test_reused_unreserve_order_id_with_different_payload_returns_409(
+	client: AsyncClient,
+	inventory_data: InventoryData,
+) -> None:
+	first, second = inventory_data.skus
+	order_id = uuid.uuid4()
+	reserve_response = await client.post(
+		"/api/v1/inventory/reserve",
+		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
+		json=_reserve_payload(
+			uuid.uuid4(), [(first.id, 1), (second.id, 1)], order_id
+		),
+	)
+	first_response = await client.post(
+		"/api/v1/inventory/unreserve",
+		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
+		json=_unreserve_payload(order_id, [(first.id, 1)]),
+	)
+	conflict_response = await client.post(
+		"/api/v1/inventory/unreserve",
+		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
+		json=_unreserve_payload(order_id, [(second.id, 1)]),
+	)
+
+	assert reserve_response.status_code == 200
+	assert first_response.status_code == 200
+	assert conflict_response.status_code == 409
+	assert conflict_response.json()["code"] == "INVENTORY_CONFLICT"
+
+
 async def test_reserve_missing_service_key_returns_401(client: AsyncClient) -> None:
 	response = await client.post(
-		"/api/v1/reserve",
-		json=_payload(uuid.uuid4(), [(uuid.uuid4(), 1)]),
+		"/api/v1/inventory/reserve",
+		json=_reserve_payload(uuid.uuid4(), [(uuid.uuid4(), 1)]),
 	)
 
 	assert response.status_code == 401
@@ -270,9 +334,9 @@ async def test_reserve_missing_service_key_returns_401(client: AsyncClient) -> N
 
 async def test_empty_items_returns_flat_validation_error(client: AsyncClient) -> None:
 	response = await client.post(
-		"/api/v1/reserve",
+		"/api/v1/inventory/reserve",
 		headers=PUBLIC_CATALOG_SERVICE_KEY_HEADERS,
-		json=_payload(uuid.uuid4(), []),
+		json=_reserve_payload(uuid.uuid4(), []),
 	)
 
 	assert response.status_code == 400

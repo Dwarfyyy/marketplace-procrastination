@@ -9,8 +9,10 @@ validated JWT claim; a query parameter with the same name is accepted but ignore
 
 The seller list includes soft-deleted products and exposes `deleted`,
 `skus_count`, and `total_active_quantity`. It supports exact status filtering and
-case-insensitive title search. The query never includes products owned by another
-seller.
+case-insensitive title search. Responses use the
+`{items, total_count, limit, offset}` pagination contract. Soft-deleted products
+are included by default and can be excluded with `include_deleted=false`. The
+query never includes products owned by another seller.
 
 ## Tests
 
@@ -19,6 +21,7 @@ seller.
 - `test_deleted_products_visible_with_deleted_flag`
 - `test_status_filter_works_correctly`
 - `test_search_by_title_case_insensitive`
+- `test_pagination_and_include_deleted_filter`
 
 Existing public-catalog tests continue to cover the service-key mode and ensure
 that B2C does not receive seller-only inventory fields.

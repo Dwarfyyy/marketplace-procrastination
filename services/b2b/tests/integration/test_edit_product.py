@@ -43,11 +43,22 @@ async def test_edit_moderated_product_returns_to_on_moderation(
 	events = await _outbox_events_for_product(db_session, data.moderated_product.id)
 	assert len(events) == 1
 	assert events[0].event_type == "PRODUCT_EDITED"
+	assert set(events[0].payload) == {
+		"event_type",
+		"idempotency_key",
+		"occurred_at",
+		"payload",
+	}
 	assert events[0].payload["event_type"] == "PRODUCT_EDITED"
-	assert events[0].payload["payload"]["product_id"] == str(
-		data.moderated_product.id
-	)
+	assert events[0].payload["occurred_at"].endswith("Z")
+	assert events[0].payload["payload"]["product_id"] == str(data.moderated_product.id)
 	assert events[0].payload["payload"]["seller_id"] == str(data.owner.id)
+	json_before = events[0].payload["payload"]["json_before"]
+	json_after = events[0].payload["payload"]["json_after"]
+	assert json_before["title"] != "Updated moderated title"
+	assert json_before["status"] == "MODERATED"
+	assert json_after["title"] == "Updated moderated title"
+	assert json_after["status"] == "ON_MODERATION"
 	assert uuid.UUID(events[0].payload["idempotency_key"]) == events[0].idempotency_key
 	assert events[0].status == OutboxEventStatus.PENDING
 
@@ -72,6 +83,12 @@ async def test_edit_blocked_product_returns_to_on_moderation(
 	assert len(events) == 1
 	assert events[0].payload["event_type"] == "PRODUCT_EDITED"
 	assert events[0].payload["payload"]["seller_id"] == str(data.owner.id)
+	json_before = events[0].payload["payload"]["json_before"]
+	json_after = events[0].payload["payload"]["json_after"]
+	assert json_before["description"] != "Fixed description after block"
+	assert json_before["status"] == "BLOCKED"
+	assert json_after["description"] == "Fixed description after block"
+	assert json_after["status"] == "ON_MODERATION"
 	assert events[0].status == OutboxEventStatus.PENDING
 
 
@@ -112,6 +129,22 @@ async def test_reserves_preserved_after_sku_edit(
 	events = await _outbox_events_for_product(db_session, data.moderated_product.id)
 	assert len(events) == 1
 	assert events[0].payload["event_type"] == "PRODUCT_EDITED"
+	json_before = events[0].payload["payload"]["json_before"]
+	json_after = events[0].payload["payload"]["json_after"]
+	before_sku = next(
+		sku for sku in json_before["skus"] if sku["id"] == str(data.reserved_sku.id)
+	)
+	after_sku = next(
+		sku for sku in json_after["skus"] if sku["id"] == str(data.reserved_sku.id)
+	)
+	assert before_sku["name"] != "Updated SKU with reserves"
+	assert before_sku["price"] != 999
+	assert before_sku["reserved_quantity"] == initial_reserved
+	assert after_sku["name"] == "Updated SKU with reserves"
+	assert after_sku["price"] == 999
+	assert after_sku["reserved_quantity"] == initial_reserved
+	assert json_before["status"] == "MODERATED"
+	assert json_after["status"] == "ON_MODERATION"
 
 
 async def test_nested_product_skus_route_returns_owned_skus(

@@ -1,21 +1,21 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from crud import inventory as inventory_crud
 from crud import outbox as outbox_crud
-from database.models.catalog.variants import Sku
-from database.models.inventory_operation import InventoryOperation
 from exceptions.sku import (
 	SkuIdempotencyConflictError,
 	SkuInsufficientStockError,
 	SkuNotFoundError,
 )
 from schemas.inventory import (
+	InventoryOrderRequest,
+	InventoryOrderResponse,
 	InventoryItemRequest,
-	InventoryItemResponse,
-	InventoryRequest,
-	InventoryResponse,
+	ReserveRequest,
+	ReserveResponse,
 )
 
 
@@ -29,64 +29,68 @@ def _normalize_items(items: list[InventoryItemRequest]) -> list[dict]:
 	]
 
 
-def _build_response(
-	request: InventoryRequest,
+def _operation_key(
+	request: ReserveRequest | InventoryOrderRequest,
+) -> UUID:
+	if isinstance(request, ReserveRequest):
+		return request.idempotency_key
+	return request.order_id
+
+
+def _operation_payload(
+	request: ReserveRequest | InventoryOrderRequest,
+	normalized_items: list[dict],
+) -> dict:
+	return {
+		"order_id": str(request.order_id),
+		"items": normalized_items,
+	}
+
+
+def _build_result(
+	request: ReserveRequest | InventoryOrderRequest,
 	operation: str,
-	items: list[dict],
-) -> InventoryResponse:
-	return InventoryResponse(
-		idempotency_key=request.idempotency_key,
-		operation=operation,
-		items=[
-			InventoryItemResponse(
-				sku_id=UUID(item["sku_id"]),
-				active_quantity=item["active_quantity"],
-				reserved_quantity=item["reserved_quantity"],
-			)
-			for item in items
-		],
-	)
-
-
-def _snapshot_skus(skus: list[Sku]) -> list[dict]:
-	return [
-		{
-			"sku_id": str(sku.id),
-			"active_quantity": sku.active_quantity,
-			"reserved_quantity": sku.reserved_quantity,
+) -> dict:
+	now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+	if operation == "RESERVE":
+		return {
+			"order_id": str(request.order_id),
+			"status": "RESERVED",
+			"reserved_at": now,
 		}
-		for sku in skus
-	]
+	return {
+		"order_id": str(request.order_id),
+		"status": "UNRESERVED",
+		"processed_at": now,
+	}
 
 
-def _build_idempotent_response(
-	request: InventoryRequest,
+def _build_response(
 	operation: str,
-	existing: InventoryOperation,
-) -> InventoryResponse | None:
-	if existing.result is None:
-		return None
-	return _build_response(request, operation, existing.result)
+	result: dict,
+) -> ReserveResponse | InventoryOrderResponse:
+	if operation == "RESERVE":
+		return ReserveResponse.model_validate(result)
+	return InventoryOrderResponse.model_validate(result)
 
 
 async def _apply_inventory_operation(
 	db: AsyncSession,
-	request: InventoryRequest,
+	request: ReserveRequest | InventoryOrderRequest,
 	operation: str,
-) -> InventoryResponse:
+) -> ReserveResponse | InventoryOrderResponse:
 	normalized_items = _normalize_items(request.items)
-	await inventory_crud.lock_idempotency_key(db, operation, request.idempotency_key)
-	existing = await inventory_crud.get_operation(
-		db, operation, request.idempotency_key
-	)
-	if existing is not None and existing.items != normalized_items:
+	operation_key = _operation_key(request)
+	operation_payload = _operation_payload(request, normalized_items)
+	await inventory_crud.lock_idempotency_key(db, operation, operation_key)
+	existing = await inventory_crud.get_operation(db, operation, operation_key)
+	if existing is not None and existing.items != operation_payload:
 		raise SkuIdempotencyConflictError(
-			"idempotency_key was already used with a different payload"
+			f"{'idempotency_key' if operation == 'RESERVE' else 'order_id'} "
+			"was already used with a different payload"
 		)
-	if existing is not None:
-		response = _build_idempotent_response(request, operation, existing)
-		if response is not None:
-			return response
+	if existing is not None and existing.result is not None:
+		return _build_response(operation, existing.result)
 
 	sku_ids = [UUID(item["sku_id"]) for item in normalized_items]
 	skus = await inventory_crud.lock_skus(db, sku_ids)
@@ -94,16 +98,6 @@ async def _apply_inventory_operation(
 		found_ids = {sku.id for sku in skus}
 		missing_id = next(sku_id for sku_id in sku_ids if sku_id not in found_ids)
 		raise SkuNotFoundError(f"SKU with id {missing_id} not found")
-
-	existing = await inventory_crud.get_operation(
-		db, operation, request.idempotency_key
-	)
-	if existing is not None:
-		if existing.items != normalized_items:
-			raise SkuIdempotencyConflictError(
-				"idempotency_key was already used with a different payload"
-			)
-		return _build_response(request, operation, _snapshot_skus(skus))
 
 	quantities = {
 		UUID(item["sku_id"]): int(item["quantity"]) for item in normalized_items
@@ -125,28 +119,30 @@ async def _apply_inventory_operation(
 			sku.reserved_quantity += quantity
 			if sku.active_quantity == 0:
 				await outbox_crud.enqueue_sku_out_of_stock_event(
-					db, sku.id, sku.product_id
+					db, sku.id, sku.product_id, sku.active_quantity
 				)
 		else:
 			sku.active_quantity += quantity
 			sku.reserved_quantity -= quantity
 		db.add(sku)
 
-	result = _snapshot_skus(skus)
+	result = _build_result(request, operation)
 	inventory_crud.add_operation(
 		db,
 		operation,
-		request.idempotency_key,
-		normalized_items,
+		operation_key,
+		operation_payload,
 		result,
 	)
 	await db.commit()
-	return _build_response(request, operation, result)
+	return _build_response(operation, result)
 
 
-async def reserve(db: AsyncSession, request: InventoryRequest) -> InventoryResponse:
+async def reserve(db: AsyncSession, request: ReserveRequest) -> ReserveResponse:
 	return await _apply_inventory_operation(db, request, "RESERVE")
 
 
-async def unreserve(db: AsyncSession, request: InventoryRequest) -> InventoryResponse:
+async def unreserve(
+	db: AsyncSession, request: InventoryOrderRequest
+) -> InventoryOrderResponse:
 	return await _apply_inventory_operation(db, request, "UNRESERVE")

@@ -8,20 +8,23 @@ from fastapi.responses import JSONResponse
 SERVICE_KEY_PATH_PREFIX = "/api/v1/public"
 SERVICE_CATALOG_PATH = "/api/v1/products"
 INVENTORY_SERVICE_PATHS = {
-	"/api/v1/reserve",
-	"/api/v1/unreserve",
-	"/api/v1/fulfill",
+	"/api/v1/inventory/reserve",
+	"/api/v1/inventory/unreserve",
+	"/api/v1/inventory/fulfill",
 }
-MODERATION_SERVICE_PATH = "/api/v1/events/moderation"
+MODERATION_SERVICE_PATH = "/api/v1/moderation/events"
 
 
 def is_service_request(request: Request) -> bool:
-	return request.url.path.startswith(SERVICE_KEY_PATH_PREFIX) or (
-		request.method == "GET"
-		and request.url.path == SERVICE_CATALOG_PATH
-		and not request.headers.get("Authorization", "").startswith("Bearer ")
-	) or request.url.path in INVENTORY_SERVICE_PATHS or (
-		request.url.path == MODERATION_SERVICE_PATH
+	return (
+		request.url.path.startswith(SERVICE_KEY_PATH_PREFIX)
+		or (
+			request.method == "GET"
+			and request.url.path == SERVICE_CATALOG_PATH
+			and not request.headers.get("Authorization", "").startswith("Bearer ")
+		)
+		or request.url.path in INVENTORY_SERVICE_PATHS
+		or (request.url.path == MODERATION_SERVICE_PATH)
 	)
 
 

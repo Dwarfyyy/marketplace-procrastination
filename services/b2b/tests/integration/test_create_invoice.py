@@ -31,10 +31,58 @@ async def test_create_invoice_with_moderated_sku_returns_201(
 	assert response.status_code == 201
 	body = response.json()
 	assert body["seller_id"] == str(data.owner.id)
-	assert body["status"] == "PENDING"
+	assert body["status"] == "CREATED"
 	assert len(body["items"]) == 1
 	assert body["items"][0]["sku_id"] == str(data.moderated_sku.id)
 	assert body["items"][0]["quantity"] == 12
+	assert "accepted_quantity" in body["items"][0]
+	assert body["items"][0]["accepted_quantity"] is None
+
+
+async def test_created_invoice_can_be_accepted(
+	client: AsyncClient,
+	create_invoice_data: CreateInvoiceData,
+	db_session: AsyncSession,
+) -> None:
+	data = create_invoice_data
+	headers = await auth_headers(data.owner.id, db_session)
+	create_response = await client.post(
+		"/api/v1/invoices",
+		headers=headers,
+		json={"items": [{"sku_id": str(data.moderated_sku.id), "quantity": 3}]},
+	)
+
+	response = await client.post(
+		f"/api/v1/invoices/{create_response.json()['id']}/accept",
+		headers=headers,
+	)
+
+	assert response.status_code == 200
+	assert response.json()["status"] == "ACCEPTED"
+	assert response.json()["items"][0]["accepted_quantity"] == 3
+
+
+async def test_get_invoice_does_not_change_created_status(
+	client: AsyncClient,
+	create_invoice_data: CreateInvoiceData,
+	db_session: AsyncSession,
+) -> None:
+	data = create_invoice_data
+	headers = await auth_headers(data.owner.id, db_session)
+	create_response = await client.post(
+		"/api/v1/invoices",
+		headers=headers,
+		json={"items": [{"sku_id": str(data.moderated_sku.id), "quantity": 3}]},
+	)
+
+	response = await client.get(
+		f"/api/v1/invoices/{create_response.json()['id']}",
+		headers=headers,
+	)
+
+	assert response.status_code == 200
+	assert response.json()["status"] == "CREATED"
+	assert response.json()["items"][0]["accepted_quantity"] is None
 
 
 async def test_empty_items_returns_400(

@@ -1,0 +1,178 @@
+openapi: 3.0.3
+info:
+  title: Moderation API
+  description: >
+    OpenAPI-контракт сервиса Moderation. Описывает приём событий о товаре от
+    B2B (US-MOD-01): идемпотентный приём `PRODUCT_CREATED` / `PRODUCT_EDITED`
+    / `PRODUCT_DELETED` и переходы карточки модерации между статусами
+    `PENDING` / `IN_REVIEW` / `MODERATED` / `BLOCKED` / `HARD_BLOCKED` /
+    `ARCHIVED`.
+  version: 0.1.0
+
+servers:
+  - url: /api/v1
+
+paths:
+  /events/product:
+    post:
+      summary: Событие об изменении товара от B2B
+      description: >
+        Принимает события о товарах от B2B (`PRODUCT_CREATED`,
+        `PRODUCT_EDITED`, `PRODUCT_DELETED`) и обновляет карточку товара в
+        очереди модерации (`moderation.cards`).
+
+        - `PRODUCT_CREATED` создаёт карточку в `PENDING`.
+        - `PRODUCT_EDITED` для карточки в `PENDING`/`IN_REVIEW` обновляет
+          снимок на месте; для `MODERATED`/`BLOCKED`/`ARCHIVED` возвращает
+          карточку в `PENDING` и сохраняет предыдущий снимок в `json_before`;
+          для `HARD_BLOCKED` не меняет карточку.
+        - `PRODUCT_DELETED` переводит карточку в `ARCHIVED` (уходит из
+          очереди).
+
+        Идемпотентность по `idempotency_key` события (генерируется B2B):
+        повторный вызов с тем же ключом возвращает `processed: false` без
+        побочных эффектов.
+
+        Эндпоинт защищён заголовком `X-Service-Key` (service-to-service, как
+        `POST /api/v1/events/moderation` в B2B) — без него или с неверным
+        ключом `401 UNAUTHORIZED`.
+      operationId: receiveProductEvent
+      tags:
+        - events
+      security:
+        - serviceKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductEventRequest"
+      responses:
+        "200":
+          description: >
+            Событие обработано (или повторный вызов с тем же
+            `idempotency_key` — без побочных эффектов)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductEventResponse"
+        "401":
+          description: Отсутствует или неверен `X-Service-Key`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Invalid or missing service key"
+        "422":
+          description: Невалидное тело запроса
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: VALIDATION_ERROR
+                message: "Request validation failed"
+
+components:
+  securitySchemes:
+    serviceKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+      description: >
+        Service-to-service ключ для вызовов от B2B. Не связан с
+        аутентификацией пользователей (JWT).
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          description: Доп. данные об ошибке (структура зависит от `code`)
+
+    ModerationCardStatus:
+      type: string
+      enum:
+        - PENDING
+        - IN_REVIEW
+        - MODERATED
+        - BLOCKED
+        - HARD_BLOCKED
+        - ARCHIVED
+
+    ProductEventPayload:
+      type: object
+      required:
+        - product_id
+        - seller_id
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        seller_id:
+          type: string
+          format: uuid
+        snapshot:
+          type: object
+          description: >
+            Текущий слепок полей товара от B2B (title, description,
+            category_id, price, images, skus и т.п.). Сохраняется как есть в
+            `json_after` карточки.
+          additionalProperties: true
+
+    ProductEventRequest:
+      type: object
+      required:
+        - event_type
+        - idempotency_key
+        - occurred_at
+        - payload
+      properties:
+        event_type:
+          type: string
+          enum:
+            - PRODUCT_CREATED
+            - PRODUCT_EDITED
+            - PRODUCT_DELETED
+        idempotency_key:
+          type: string
+          format: uuid
+          description: Генерируется B2B, сохраняется как есть для идемпотентности.
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          $ref: "#/components/schemas/ProductEventPayload"
+
+    ProductEventResponse:
+      type: object
+      required:
+        - idempotency_key
+        - processed
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        processed:
+          type: boolean
+          description: >
+            `false`, если событие с этим `idempotency_key` уже было
+            обработано ранее (повтор без побочных эффектов)
+        card_id:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          allOf:
+            - $ref: "#/components/schemas/ModerationCardStatus"
+          nullable: true
+          description: Итоговый статус карточки после обработки события

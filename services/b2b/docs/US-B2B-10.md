@@ -2,7 +2,7 @@
 
 ## Implementation
 
-Added service-to-service endpoint `POST /api/v1/fulfill`, protected by the B2C
+Added service-to-service endpoint `POST /api/v1/inventory/fulfill`, protected by the B2C
 `X-Service-Key`. The request contains an `order_id` UUID and a non-empty list of
 `{sku_id, quantity}` items. Duplicate SKU entries are aggregated before any
 inventory checks.
@@ -15,8 +15,9 @@ use the flat `{code, message}` contract.
 ## Idempotency
 
 Successful operations are stored in `catalog.fulfilled_orders`, keyed by
-`order_id`. The stored normalized request and response snapshot allow identical
-retries to return `200` without another deduction. Reusing an order ID with a
+`order_id`. The stored normalized request and inventory snapshot allow identical
+retries to return the original `{order_id, status, processed_at}` response with
+`200` without another deduction. Reusing an order ID with a
 different payload returns `409 INVENTORY_CONFLICT`. A transaction-scoped advisory
 lock serializes concurrent requests for the same order before SKU rows are read.
 

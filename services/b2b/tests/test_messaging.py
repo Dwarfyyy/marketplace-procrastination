@@ -54,12 +54,16 @@ async def test_moderation_event_payload_matches_contract() -> None:
 	product_id = uuid.uuid4()
 	seller_id = uuid.uuid4()
 	idempotency_key = uuid.uuid4()
+	json_before = {"id": str(product_id), "status": "MODERATED", "skus": []}
+	json_after = {"id": str(product_id), "status": "ON_MODERATION", "skus": []}
 
 	payload = build_moderation_product_event_payload(
 		product_id,
 		seller_id,
 		idempotency_key,
 		event="EDITED",
+		json_before=json_before,
+		json_after=json_after,
 	)
 
 	assert set(payload) == {
@@ -74,7 +78,27 @@ async def test_moderation_event_payload_matches_contract() -> None:
 	assert payload["payload"] == {
 		"product_id": str(product_id),
 		"seller_id": str(seller_id),
+		"json_before": json_before,
+		"json_after": json_after,
 	}
+
+
+async def test_created_moderation_event_requires_json_after() -> None:
+	product_id = uuid.uuid4()
+	seller_id = uuid.uuid4()
+	idempotency_key = uuid.uuid4()
+	json_after = {"id": str(product_id), "status": "ON_MODERATION", "skus": []}
+
+	payload = build_moderation_product_event_payload(
+		product_id,
+		seller_id,
+		idempotency_key,
+		event="CREATED",
+		json_after=json_after,
+	)
+
+	assert payload["payload"]["json_after"] == json_after
+	assert "json_before" not in payload["payload"]
 
 
 async def test_b2c_product_deleted_payload_contains_sku_ids() -> None:
@@ -105,6 +129,7 @@ async def test_b2c_sku_out_of_stock_payload_matches_contract() -> None:
 	payload = build_b2c_sku_out_of_stock_payload(
 		sku_id,
 		product_id,
+		0,
 		idempotency_key,
 	)
 
@@ -114,6 +139,7 @@ async def test_b2c_sku_out_of_stock_payload_matches_contract() -> None:
 	assert payload["payload"] == {
 		"sku_id": str(sku_id),
 		"product_id": str(product_id),
+		"available_quantity": 0,
 	}
 
 
@@ -165,9 +191,7 @@ async def test_moderation_event_has_service_key_header(
 	)
 
 	assert exchange.message is not None
-	assert exchange.message.headers == {
-		"X-Service-Key": "test-moderation-service-key"
-	}
+	assert exchange.message.headers == {"X-Service-Key": "test-moderation-service-key"}
 	assert exchange.routing_key == "moderation.product.created"
 
 
@@ -188,7 +212,11 @@ async def test_b2c_event_has_service_key_header(
 			"event_type": "SKU_OUT_OF_STOCK",
 			"idempotency_key": "event-id",
 			"occurred_at": "2026-06-10T00:00:00Z",
-			"payload": {"sku_id": "sku-id", "product_id": "product-id"},
+			"payload": {
+				"sku_id": "sku-id",
+				"product_id": "product-id",
+				"available_quantity": 0,
+			},
 		},
 	)
 

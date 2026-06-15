@@ -42,8 +42,8 @@ def add_operation(
 	db: AsyncSession,
 	operation: str,
 	idempotency_key: UUID,
-	items: list[dict],
-	result: list[dict],
+	items: dict,
+	result: dict,
 ) -> InventoryOperation:
 	db_operation = InventoryOperation(
 		operation=operation,

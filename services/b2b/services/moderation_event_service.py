@@ -5,7 +5,7 @@ from crud import outbox as outbox_crud
 from crud import sku as sku_crud
 from database.models.catalog.base import Product, ProductStatusEnum
 from exceptions.product import ProductNotFoundError
-from schemas.moderation_event import ModerationEventRequest, ModerationEventResponse
+from schemas.moderation_event import ModerationEventRequest
 
 
 def _clear_blocking_data(product: Product) -> None:
@@ -32,22 +32,19 @@ def _apply_blocking_data(product: Product, request: ModerationEventRequest) -> N
 
 async def apply_moderation_event(
 	db: AsyncSession, request: ModerationEventRequest
-) -> ModerationEventResponse:
+) -> None:
 	await moderation_event_crud.lock_idempotency_key(db, request.idempotency_key)
 	existing = await moderation_event_crud.get_processed_event(
 		db, request.idempotency_key
 	)
 	if existing is not None:
-		return ModerationEventResponse(
-			idempotency_key=request.idempotency_key,
-			processed=False,
-		)
+		return
 
 	product = await moderation_event_crud.lock_product(db, request.product_id)
 	if product is None:
 		raise ProductNotFoundError("Product not found")
 
-	if request.status == "MODERATED":
+	if request.event_type == "MODERATED":
 		product.status = ProductStatusEnum.MODERATED
 		_clear_blocking_data(product)
 	else:
@@ -66,10 +63,6 @@ async def apply_moderation_event(
 		db,
 		request.idempotency_key,
 		request.product_id,
-		request.status,
+		request.event_type,
 	)
 	await db.commit()
-	return ModerationEventResponse(
-		idempotency_key=request.idempotency_key,
-		processed=True,
-	)

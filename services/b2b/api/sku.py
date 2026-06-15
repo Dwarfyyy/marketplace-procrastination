@@ -1,13 +1,14 @@
 import uuid
-from typing import Annotated, List
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.db import get_db
 from exceptions.product import ProductNotFoundError, ProductNotOwnerError
 from exceptions.sku import (
+	SkuActiveReservesError,
 	SkuForbiddenError,
 	SkuNotFoundError,
 	SkuValidationError,
@@ -144,18 +145,33 @@ async def get_sku_endpoint(
 		) from e
 
 
-@router.get("/product/{product_id}", response_model=List[SkuResponse])
-async def get_skus_by_product_endpoint(
+@router.delete("/{sku_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_sku_endpoint(
 	request: Request,
-	product_id: UUID,
+	sku_id: UUID,
 	db: Annotated[AsyncSession, Depends(get_db)],
-) -> list[SkuResponse]:
-	"""Retrieve all SKUs associated with a specific product ID."""
+) -> Response:
 	user_id = uuid.UUID(str(getattr(request.state, "user_id", None)))
 	try:
-		return await sku_service.get_skus_by_product_id(db, product_id, user_id)
-	except ProductNotFoundError as e:
+		await sku_service.delete_sku(db, sku_id, user_id)
+		return Response(status_code=status.HTTP_204_NO_CONTENT)
+	except SkuNotFoundError as e:
 		raise HTTPException(
 			status_code=404,
 			detail={"code": "NOT_FOUND", "message": str(e)},
+		) from e
+	except ProductNotOwnerError as e:
+		raise HTTPException(
+			status_code=403,
+			detail={"code": "NOT_OWNER", "message": str(e)},
+		) from e
+	except SkuForbiddenError as e:
+		raise HTTPException(
+			status_code=403,
+			detail={"code": "FORBIDDEN", "message": str(e)},
+		) from e
+	except SkuActiveReservesError as e:
+		raise HTTPException(
+			status_code=409,
+			detail={"code": "ACTIVE_RESERVES", "message": str(e)},
 		) from e

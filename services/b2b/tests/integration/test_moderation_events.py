@@ -27,7 +27,7 @@ def _body(
 	body = {
 		"idempotency_key": str(idempotency_key or uuid.uuid4()),
 		"product_id": str(product_id),
-		"status": status,
+		"event_type": status,
 		"hard_block": hard_block,
 		"occurred_at": datetime.now(timezone.utc).isoformat(),
 	}
@@ -50,7 +50,7 @@ def _body(
 
 async def _post(client: AsyncClient, body: dict) -> object:
 	return await client.post(
-		"/api/v1/events/moderation",
+		"/api/v1/moderation/events",
 		headers=MODERATION_SERVICE_KEY_HEADERS,
 		json=body,
 	)
@@ -86,8 +86,11 @@ async def test_moderated_event_clears_blocking_data(
 		_body(moderation_event_data.blocked_product.id, "MODERATED"),
 	)
 
-	assert response.status_code == 200
-	product = await _reload_product(db_session, moderation_event_data.blocked_product.id)
+	assert response.status_code == 204
+	assert response.content == b""
+	product = await _reload_product(
+		db_session, moderation_event_data.blocked_product.id
+	)
 	assert product.status == ProductStatusEnum.MODERATED
 	assert product.blocked_reason_id is None
 	assert product.blocking_reason_title is None
@@ -105,7 +108,8 @@ async def test_blocked_soft_saves_field_reports(
 		_body(moderation_event_data.product.id, "BLOCKED"),
 	)
 
-	assert response.status_code == 200
+	assert response.status_code == 204
+	assert response.content == b""
 	product = await _reload_product(db_session, moderation_event_data.product.id)
 	assert product.status == ProductStatusEnum.BLOCKED
 	assert product.blocking_reason_title == "Product content violates policy"
@@ -129,7 +133,8 @@ async def test_blocked_hard_sets_terminal_status(
 		_body(moderation_event_data.product.id, "BLOCKED", hard_block=True),
 	)
 
-	assert response.status_code == 200
+	assert response.status_code == 204
+	assert response.content == b""
 	product = await _reload_product(db_session, moderation_event_data.product.id)
 	assert product.status == ProductStatusEnum.HARD_BLOCKED
 	events = await _blocked_events(db_session, product.id)
@@ -179,10 +184,10 @@ async def test_duplicate_event_same_idempotency_key_no_side_effects(
 	first = await _post(client, body)
 	second = await _post(client, body)
 
-	assert first.status_code == 200
-	assert first.json()["processed"] is True
-	assert second.status_code == 200
-	assert second.json()["processed"] is False
+	assert first.status_code == 204
+	assert first.content == b""
+	assert second.status_code == 204
+	assert second.content == b""
 	assert len(await _blocked_events(db_session, moderation_event_data.product.id)) == 1
 
 
@@ -191,7 +196,7 @@ async def test_missing_service_key_returns_401(
 	moderation_event_data: ModerationEventData,
 ) -> None:
 	response = await client.post(
-		"/api/v1/events/moderation",
+		"/api/v1/moderation/events",
 		json=_body(moderation_event_data.product.id, "MODERATED"),
 	)
 
@@ -205,7 +210,7 @@ async def test_b2c_service_key_cannot_apply_moderation(
 	moderation_event_data: ModerationEventData,
 ) -> None:
 	response = await client.post(
-		"/api/v1/events/moderation",
+		"/api/v1/moderation/events",
 		headers={"X-Service-Key": "test-b2c-service-key"},
 		json=_body(moderation_event_data.product.id, "MODERATED"),
 	)

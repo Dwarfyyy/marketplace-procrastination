@@ -38,7 +38,7 @@ async def create_new_invoice(
 	return await invoice_crud.create_invoice(db, invoice_data, seller_id)
 
 
-async def get_invoice(db: AsyncSession, invoice_id: UUID) -> Invoice | None:
+async def get_invoice(db: AsyncSession, invoice_id: UUID) -> Invoice:
 	invoice = await invoice_crud.get_invoice_by_id(db, invoice_id)
 	if not invoice:
 		raise InvoiceNotFoundError()
@@ -50,7 +50,7 @@ async def accept_invoice(db: AsyncSession, invoice_id: UUID) -> Invoice:
 	if not invoice:
 		raise InvoiceNotFoundError(str(invoice_id))
 
-	if invoice.status != InvoiceStatusEnum.PENDING:
+	if invoice.status != InvoiceStatusEnum.CREATED:
 		raise InvalidInvoiceStatusError(invoice.status, "accept")
 
 	for item in invoice.items:
@@ -72,7 +72,7 @@ async def delete_invoice(db: AsyncSession, invoice_id: UUID) -> None:
 	if not invoice:
 		raise InvoiceNotFoundError(str(invoice_id))
 
-	if invoice.status != InvoiceStatusEnum.PENDING:
+	if invoice.status != InvoiceStatusEnum.CREATED:
 		raise InvalidInvoiceStatusError(invoice.status, "delete")
 
 	await invoice_crud.delete_invoice(db, invoice)

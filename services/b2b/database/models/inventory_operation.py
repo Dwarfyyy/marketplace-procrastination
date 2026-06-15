@@ -24,8 +24,8 @@ class InventoryOperation(Base):
 	)
 	operation: Mapped[str] = mapped_column(String(32))
 	idempotency_key: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
-	items: Mapped[list[dict]] = mapped_column(JSONB)
-	result: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+	items: Mapped[dict] = mapped_column(JSONB)
+	result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 	created_at: Mapped[datetime] = mapped_column(
 		DateTime(timezone=True), server_default=func.now()
 	)

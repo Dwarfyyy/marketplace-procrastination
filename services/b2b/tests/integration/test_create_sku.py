@@ -77,6 +77,13 @@ async def test_first_sku_emits_created_event_to_moderation(
 	assert events[0].payload["event_type"] == "PRODUCT_CREATED"
 	assert events[0].payload["payload"]["product_id"] == str(product.id)
 	assert events[0].payload["payload"]["seller_id"] == str(product.seller_id)
+	json_after = events[0].payload["payload"]["json_after"]
+	assert json_after["id"] == str(product.id)
+	assert json_after["status"] == "ON_MODERATION"
+	assert len(json_after["skus"]) == 1
+	assert json_after["skus"][0]["images"] == [
+		{"url": "/s3/test-sku.jpg", "ordering": 0}
+	]
 	assert uuid.UUID(events[0].payload["idempotency_key"]) == events[0].idempotency_key
 	assert events[0].payload["occurred_at"].endswith("Z")
 	assert events[0].status == OutboxEventStatus.PENDING
@@ -125,6 +132,11 @@ async def test_subsequent_sku_on_moderated_product_returns_to_on_moderation(
 	assert events[0].event_type == "PRODUCT_EDITED"
 	assert events[0].routing_key == "moderation.product.edited"
 	assert events[0].payload["event_type"] == "PRODUCT_EDITED"
+	assert events[0].payload["payload"]["json_before"]["status"] == "MODERATED"
+	assert events[0].payload["payload"]["json_after"]["status"] == "ON_MODERATION"
+	assert len(events[0].payload["payload"]["json_after"]["skus"]) == (
+		len(events[0].payload["payload"]["json_before"]["skus"]) + 1
+	)
 
 
 async def test_subsequent_sku_on_blocked_product_returns_to_on_moderation(
@@ -148,6 +160,8 @@ async def test_subsequent_sku_on_blocked_product_returns_to_on_moderation(
 	assert len(events) == 1
 	assert events[0].event_type == "PRODUCT_EDITED"
 	assert events[0].payload["event_type"] == "PRODUCT_EDITED"
+	assert events[0].payload["payload"]["json_before"]["status"] == "BLOCKED"
+	assert events[0].payload["payload"]["json_after"]["status"] == "ON_MODERATION"
 
 
 async def test_add_sku_to_hard_blocked_returns_403(

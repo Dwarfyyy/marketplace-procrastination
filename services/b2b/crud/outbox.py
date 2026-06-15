@@ -31,17 +31,30 @@ def build_moderation_product_event_payload(
 	seller_id: UUID,
 	idempotency_key: UUID,
 	event: str = "CREATED",
+	json_before: dict | None = None,
+	json_after: dict | None = None,
 ) -> dict:
 	occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 	event_type = MODERATION_EVENT_TYPES[event]
+	event_payload = {
+		"product_id": str(product_id),
+		"seller_id": str(seller_id),
+	}
+	if event == "CREATED":
+		if json_after is None:
+			raise ValueError("PRODUCT_CREATED requires json_after")
+		event_payload["json_after"] = json_after
+	elif event == "EDITED":
+		if json_before is None or json_after is None:
+			raise ValueError("PRODUCT_EDITED requires json_before and json_after")
+		event_payload["json_before"] = json_before
+		event_payload["json_after"] = json_after
+
 	return {
 		"event_type": event_type,
 		"idempotency_key": str(idempotency_key),
 		"occurred_at": occurred_at,
-		"payload": {
-			"product_id": str(product_id),
-			"seller_id": str(seller_id),
-		},
+		"payload": event_payload,
 	}
 
 
@@ -65,6 +78,7 @@ def build_b2c_product_deleted_payload(
 def build_b2c_sku_out_of_stock_payload(
 	sku_id: UUID,
 	product_id: UUID,
+	available_quantity: int,
 	idempotency_key: UUID,
 ) -> dict:
 	occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -75,6 +89,7 @@ def build_b2c_sku_out_of_stock_payload(
 		"payload": {
 			"sku_id": str(sku_id),
 			"product_id": str(product_id),
+			"available_quantity": available_quantity,
 		},
 	}
 
@@ -106,6 +121,8 @@ async def enqueue_moderation_product_event(
 	product_id: UUID,
 	seller_id: UUID,
 	event: str = "CREATED",
+	json_before: dict | None = None,
+	json_after: dict | None = None,
 ) -> OutboxEvent:
 	idempotency_key = uuid.uuid4()
 	event_type = MODERATION_EVENT_TYPES[event]
@@ -115,6 +132,8 @@ async def enqueue_moderation_product_event(
 		seller_id=seller_id,
 		idempotency_key=idempotency_key,
 		event=event,
+		json_before=json_before,
+		json_after=json_after,
 	)
 	outbox_event = OutboxEvent(
 		idempotency_key=idempotency_key,
@@ -163,6 +182,7 @@ async def enqueue_sku_out_of_stock_event(
 	db: AsyncSession,
 	sku_id: UUID,
 	product_id: UUID,
+	available_quantity: int,
 ) -> OutboxEvent:
 	idempotency_key = uuid.uuid4()
 	event = OutboxEvent(
@@ -172,6 +192,7 @@ async def enqueue_sku_out_of_stock_event(
 		payload=build_b2c_sku_out_of_stock_payload(
 			sku_id,
 			product_id,
+			available_quantity,
 			idempotency_key,
 		),
 		status=OutboxEventStatus.PENDING,

@@ -8,6 +8,11 @@
 `ON_MODERATION` и создаёт `PRODUCT_EDITED`. Дополнительный SKU у уже
 `ON_MODERATION` товара не создаёт повторного события.
 
+Событие `PRODUCT_CREATED` содержит обязательный снимок карточки
+`payload.json_after`. Событие `PRODUCT_EDITED` содержит оба снимка:
+`payload.json_before` до добавления SKU и `payload.json_after` после добавления
+SKU и перевода товара в `ON_MODERATION`.
+
 Доставка событий: transactional outbox (`outbox_events`) + фоновый worker
 (`OUTBOX_WORKER_ENABLED`), публикация в RabbitMQ (`core/messaging`). Сообщение
 передаёт `X-Service-Key` в AMQP headers и имеет контрактную форму
@@ -28,12 +33,10 @@
   - **Коды ошибок**: `404` `NOT_FOUND`; `403` `NOT_OWNER` / `FORBIDDEN`; `400` `INVALID_REQUEST` или `VALIDATION_ERROR`.
 
 - **`PATCH /api/v1/skus/{sku_id}`**
-  - Контрактный маршрут частичного обновления SKU. `PUT` сохранён для
-    совместимости с US-B2B-03.
+  - Контрактный маршрут частичного обновления SKU.
 
 - **`GET /api/v1/products/{product_id}/skus`**
-  - Контрактный маршрут списка SKU товара. Старый `/skus/product/{product_id}`
-    сохранён для обратной совместимости.
+  - Контрактный маршрут списка SKU товара.
 
 ## Запуск
 
