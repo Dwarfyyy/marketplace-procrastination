@@ -16,6 +16,7 @@ class Characteristic(BaseModel):
 	id: uuid.UUID
 	name: CharacteristicName
 	value: str
+	model_config = ConfigDict(from_attributes=True)
 
 
 class CharacteristicInFavorite(BaseModel):

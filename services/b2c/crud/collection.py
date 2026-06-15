@@ -55,21 +55,6 @@ async def count_active_collections(db: AsyncSession) -> int:
 	return result.scalar() or 0
 
 
-async def get_active_collection_by_id(
-	db: AsyncSession, collection_id: uuid.UUID
-) -> Collection | None:
-	"""Получить активную подборку по id (или None, если её нет / неактивна)."""
-	today = date.today()
-
-	query = select(Collection).where(
-		Collection.id == collection_id,
-		Collection.is_active == True,  # noqa: E712
-		(Collection.start_date <= today) | (Collection.start_date.is_(None)),
-	)
-	result = await db.execute(query)
-	return result.scalar_one_or_none()
-
-
 async def get_collection_product_ids(
 	db: AsyncSession, collection_id: uuid.UUID
 ) -> list[uuid.UUID]:
@@ -77,7 +62,7 @@ async def get_collection_product_ids(
 
 	B2C хранит только связь подборка→UUID; актуальность товара определяется
 	позже обогащением из B2B. Поэтому здесь возвращаются все привязанные id,
-	а недоступные затем уходят в `unavailable_ids`.
+	а недоступные затем отбрасываются при сборке `products`.
 	"""
 	query = (
 		select(CollectionProduct.product_id)
