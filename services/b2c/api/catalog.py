@@ -36,27 +36,28 @@ router = fastapi.APIRouter(prefix="/api/v1/catalog")
 
 @router.get("/products", response_model=PaginatedCatalogProducts)
 async def get_catalog_products(
+	request: Request,
 	db_session: Annotated[AsyncSession, fastapi.Depends(db.get_db)],
 	category_id: Optional[uuid.UUID] = None,
 	limit: Annotated[int, fastapi.Query(ge=1, le=100)] = 20,
 	offset: Annotated[int, fastapi.Query(ge=0)] = 0,
-	filter: Optional[str] = None,
 	sort: str = "popularity",
 	q: Optional[str] = None,
 ) -> PaginatedCatalogProducts:
-	filters_param = None
-	if filter:
-		try:
-			filters_obj = json.loads(filter)
-			filters_param = json.dumps(filters_obj, ensure_ascii=False)
-		except json.JSONDecodeError as e:
-			raise fastapi.HTTPException(
-				status_code=400,
-				detail={
-					"code": "INVALID_FILTER",
-					"message": "Invalid JSON in filter parameter",
-				},
-			) from e
+	qp = request.query_params
+	deep: dict = {}
+	for k, v in qp.multi_items():
+		if k.startswith("filter[") and k.endswith("]"):
+			inner = k[len("filter[") : -1]
+			if inner in deep:
+				if isinstance(deep[inner], list):
+					deep[inner].append(v)
+				else:
+					deep[inner] = [deep[inner], v]
+			else:
+				deep[inner] = v
+
+	filters_param = json.dumps(deep, ensure_ascii=False) if deep else None
 
 	try:
 		return await product_service.get_products_list(
