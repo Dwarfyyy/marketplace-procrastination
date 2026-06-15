@@ -5,21 +5,22 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import ModerationStatus, OutboxEvent, ProductModeration
+from database.models import (
+	BlockingReason,
+	ModerationStatus,
+	OutboxEvent,
+	ProductModeration,
+)
+from schemas.products import DeclineRequest
 from services.mutations import ensure_not_terminal, error
 
 
-def _has_skus(card: ProductModeration) -> bool:
-	skus = card.json_after.get("skus", [])
-	return isinstance(skus, list) and len(skus) > 0
-
-
-async def approve_product(
+async def decline_product(
 	db: AsyncSession,
 	product_id: UUID,
 	moderator_id: UUID,
-	moderator_comment: str | None,
-) -> None:
+	request: DeclineRequest,
+) -> ModerationStatus:
 	result = await db.execute(
 		select(ProductModeration)
 		.where(ProductModeration.product_id == product_id)
@@ -33,28 +34,41 @@ async def approve_product(
 		raise error(409, "CONFLICT", "Product is not in review status")
 	if card.moderator_id != moderator_id:
 		raise error(403, "FORBIDDEN", "This moderation card is not assigned to you")
-	if not _has_skus(card):
-		raise error(409, "CONFLICT", "Product has no SKUs, cannot approve")
+
+	reason = await db.get(BlockingReason, request.blocking_reason_id)
+	if reason is None:
+		raise error(404, "NOT_FOUND", "Blocking reason not found")
 
 	now = datetime.now(timezone.utc)
 	idempotency_key = uuid.uuid4()
-	card.status = ModerationStatus.MODERATED
+	card.status = (
+		ModerationStatus.HARD_BLOCKED
+		if reason.hard_block
+		else ModerationStatus.BLOCKED
+	)
 	card.date_moderation = now
-	card.moderator_comment = moderator_comment
-	card.blocking_reason_id = None
-	card.field_reports = []
+	card.blocking_reason_id = reason.id
+	card.moderator_comment = request.moderator_comment
+	card.field_reports = [
+		report.model_dump(mode="json", exclude_none=True)
+		for report in request.field_reports
+	]
 	db.add(
 		OutboxEvent(
 			idempotency_key=idempotency_key,
-			event_type="MODERATED",
+			event_type="BLOCKED",
 			payload={
 				"idempotency_key": str(idempotency_key),
 				"product_id": str(product_id),
-				"event_type": "MODERATED",
-				"hard_block": False,
-				"field_reports": [],
+				"event_type": "BLOCKED",
+				"hard_block": reason.hard_block,
+				"blocking_reason_id": str(reason.id),
+				"blocking_reason_title": reason.title,
+				"moderator_comment": request.moderator_comment,
+				"field_reports": card.field_reports,
 				"occurred_at": now.isoformat().replace("+00:00", "Z"),
 			},
 		)
 	)
 	await db.commit()
+	return card.status

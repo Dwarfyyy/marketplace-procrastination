@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Enum, Integer, String, Text, Uuid, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Integer, String, Text, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -44,6 +44,14 @@ class ProductModeration(Base):
 		DateTime, default=func.now(), onupdate=func.now()
 	)
 	date_moderation: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BlockingReason(Base):
+	__tablename__ = "product_blocking_reasons"
+
+	id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+	title: Mapped[str] = mapped_column(String(255), unique=True)
+	hard_block: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class OutboxEvent(Base):

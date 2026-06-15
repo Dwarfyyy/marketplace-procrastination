@@ -8,6 +8,11 @@ The decision and a `MODERATED` event are committed in one database transaction.
 The background outbox worker retries delivery to B2B and reuses the same
 `idempotency_key`, so B2B can safely ignore duplicate attempts.
 
+`POST /api/v1/products/{product_id}/decline` uses the selected blocking
+reason's `hard_block` flag. Hard reasons move the card to terminal
+`HARD_BLOCKED` and emit `BLOCKED` with `hard_block=true`; subsequent moderator
+mutations and seller `EDITED` events cannot move the card out of that state.
+
 ### ADR
 
 Synchronous POST is simple but either loses the event after a local commit or
@@ -16,3 +21,10 @@ also be reliable, but adds infrastructure and contract work to the currently
 small Moderation service. This implementation uses a transactional outbox:
 it gives reliable retries and a fast approve response while matching the
 idempotent B2B moderation endpoint already present in this repository.
+
+For terminal-state protection, the service uses an enum status plus a shared
+guard called by every mutating card endpoint. A separate `is_terminal` flag
+would duplicate state and could drift, while moving records to an archive table
+would complicate lookup and deletion events. The shared guard keeps normal-flow
+auditing straightforward and still permits an explicit, audited admin data-fix
+outside the public API.
