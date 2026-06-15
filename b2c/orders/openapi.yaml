@@ -5,7 +5,9 @@ info:
     OpenAPI-контракт для блока "Заказы" B2C-приложения. Описывает оформление
     заказа (US-ORD-01): идемпотентный checkout с резервом SKU в B2B
     (all-or-nothing) и фиксацией цен в OrderItem на момент покупки, а также
-    просмотр и отмену заказов покупателя.
+    просмотр, отслеживание (US-ORD-02: список с пагинацией/фильтром по
+    статусу и детали с зафиксированными ценами, IDOR-защита через 404) и
+    отмену заказов покупателя.
   version: 0.1.0
 
 servers:
@@ -16,6 +18,57 @@ security:
 
 paths:
   /orders:
+    get:
+      summary: Список заказов покупателя
+      description: >
+        Возвращает заказы текущего покупателя с пагинацией и опциональным
+        фильтром по статусу. `buyer_id` определяется **только** из JWT —
+        результат всегда ограничен заказами текущего покупателя, независимо
+        от значений `limit`/`offset`/`status`. Сортировка — по `created_at`
+        по убыванию (новые сверху).
+      operationId: getOrders
+      tags:
+        - orders
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Размер страницы
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          description: Смещение страницы
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: status
+          in: query
+          required: false
+          description: Фильтр по статусу заказа
+          schema:
+            $ref: "#/components/schemas/OrderStatus"
+      responses:
+        "200":
+          description: Страница заказов покупателя
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedOrders"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
     post:
       summary: Оформить заказ (checkout)
       description: >
@@ -439,3 +492,26 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    PaginatedOrders:
+      type: object
+      required:
+        - items
+        - total_count
+        - limit
+        - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderResponse"
+        total_count:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        offset:
+          type: integer
+          minimum: 0

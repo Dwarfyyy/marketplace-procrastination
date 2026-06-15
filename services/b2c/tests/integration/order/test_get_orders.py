@@ -31,7 +31,7 @@ async def test_order_detail_shows_fixed_prices(
 	assert sku_response["unit_price"] == old_price
 
 
-async def test_other_user_order_returns_404(
+async def test_other_user_order_returns_404_not_403(
 	client: AsyncClient,
 	db_session: AsyncSession,
 	order_data: OrderData,
@@ -40,6 +40,7 @@ async def test_other_user_order_returns_404(
 		f"/api/v1/orders/{order_data.order.id}",
 		headers=await auth_headers(uuid.uuid4(), db_session),
 	)
+	assert response.status_code != 403
 	assert response.status_code == 404
 	body = response.json()
 	assert body["code"] == "NOT_FOUND"
