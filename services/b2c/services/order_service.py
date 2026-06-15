@@ -1,9 +1,10 @@
 import hashlib
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import crud.address as address_crud
@@ -25,6 +26,8 @@ from exceptions.order import (
 from schemas.cart import CartValidationResponse
 from schemas.order import OrderResponse, PaginatedOrders
 from services import cart_service, schemas_builder
+
+logger = logging.getLogger(__name__)
 
 
 def parse_idempotency_key(value: str) -> uuid.UUID:
@@ -209,14 +212,28 @@ async def cancel_order(
 	buyer_id: uuid.UUID,
 	reason: str | None = None,
 ) -> OrderResponse:
-	order_updated = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
-	if order_updated is None:
+	order = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
+	if order is None:
 		raise OrderNotFoundError()
 
-	if order_updated.status not in [OrderStatusEnum.CREATED, OrderStatusEnum.PAID]:
+	if order.status not in [OrderStatusEnum.CREATED, OrderStatusEnum.PAID]:
 		raise OrderNotCancelableError()
 
-	await order_crud.cancel_order(db, order_id, buyer_id, reason=reason)
+	try:
+		await order_crud.unreserve_order_items(db, order)
+	except SQLAlchemyError:
+		logger.exception(
+			"Unreserve failed for order %s, marking CANCEL_PENDING", order_id
+		)
+		await order_crud.change_order_status(
+			db, order.id, OrderStatusEnum.CANCEL_PENDING, reason
+		)
+		order_updated = await order_crud.get_order_by_id_for_buyer(
+			db, order_id, buyer_id
+		)
+		return schemas_builder.build_order_response(order_updated)
+
+	await order_crud.change_order_status(db, order.id, OrderStatusEnum.CANCELLED, reason)
 	order_updated = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
 
 	return schemas_builder.build_order_response(order_updated)
