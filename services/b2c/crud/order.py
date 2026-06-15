@@ -253,19 +253,34 @@ async def reserve_and_create_order(
 	return order.id
 
 
-async def cancel_order(
-	db: AsyncSession,
-	order_id: uuid.UUID,
-	buyer_id: uuid.UUID,
-	reason: str | None = None,
-) -> None:
-	order = await get_order_by_id_for_buyer(db, order_id, buyer_id)
-	if order is None:
-		raise OrderNotFoundError()
+async def _lock_skus_for_order_items(
+	db: AsyncSession, order_items: list[OrderItem]
+) -> dict[uuid.UUID, Sku]:
+	sku_ids_sorted = sorted({item.sku_id for item in order_items}, key=str)
+	locked_result = await db.execute(
+		select(Sku).where(Sku.id.in_(sku_ids_sorted)).with_for_update()
+	)
+	return {sku.id: sku for sku in locked_result.scalars().all()}
 
-	await change_order_status(db, order.id, OrderStatusEnum.CANCELLED, reason)
-	await db.flush()
-	return order.id
+
+def _apply_unreserve(
+	locked_skus: dict[uuid.UUID, Sku], order_items: list[OrderItem]
+) -> None:
+	for item in order_items:
+		sku = locked_skus.get(item.sku_id)
+		if sku is None:
+			continue
+		sku.reserved_quantity = max(0, sku.reserved_quantity - item.quantity)
+		sku.active_quantity += item.quantity
+
+
+async def unreserve_order_items(db: AsyncSession, order: Order) -> None:
+	transaction_ctx = db.begin_nested() if db.in_transaction() else db.begin()
+	async with transaction_ctx:
+		locked_skus = await _lock_skus_for_order_items(db, order.items)
+		_apply_unreserve(locked_skus, order.items)
+		for sku in locked_skus.values():
+			db.add(sku)
 
 
 async def get_buyer_orders(
