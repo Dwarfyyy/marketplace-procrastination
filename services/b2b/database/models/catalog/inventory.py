@@ -11,10 +11,10 @@ from database.core import Base
 
 
 class InvoiceStatusEnum(str, enum.Enum):
-	DRAFT = "DRAFT"
-	PENDING = "PENDING"
+	CREATED = "CREATED"
+	PARTIALLY_ACCEPTED = "PARTIALLY_ACCEPTED"
 	ACCEPTED = "ACCEPTED"
-	REJECTED = "REJECTED"
+	CANCELLED = "CANCELLED"
 
 
 class Invoice(Base):
@@ -26,7 +26,7 @@ class Invoice(Base):
 	)
 	seller_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
 	status: Mapped[InvoiceStatusEnum] = mapped_column(
-		default=InvoiceStatusEnum.DRAFT, server_default="DRAFT"
+		default=InvoiceStatusEnum.CREATED, server_default="CREATED"
 	)
 	created_at: Mapped[datetime] = mapped_column(
 		DateTime(timezone=True), server_default=func.now()
@@ -56,5 +56,6 @@ class InvoiceItem(Base):
 	)
 	sku_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("catalog.skus.id"))
 	quantity: Mapped[int] = mapped_column(Integer)
+	accepted_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 	invoice: Mapped["Invoice"] = relationship("Invoice", back_populates="items")

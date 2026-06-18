@@ -8,7 +8,7 @@ from crud import images as images_crud
 from crud import product as product_crud
 from database.models import Characteristic, Sku
 from database.models.catalog.base import Product
-from database.models.catalog.variants import Image
+from database.models.catalog.variants import Image, ImageEntityTypeEnum
 
 
 async def create(
@@ -17,6 +17,7 @@ async def create(
 	product: Product,
 	images: list[dict] | None = None,
 	moderation_event: str | None = None,
+	json_before: dict | None = None,
 ) -> Sku:
 	chars_data = data.pop("characteristics", []) or []
 	data.pop("images", None)
@@ -39,7 +40,12 @@ async def create(
 		)
 
 	if moderation_event is not None:
-		await product_crud.submit_for_moderation(db, product, event=moderation_event)
+		await product_crud.submit_for_moderation(
+			db,
+			product,
+			event=moderation_event,
+			json_before=json_before,
+		)
 
 	await db.commit()
 	return await get_sku_by_id(db, sku.id)
@@ -62,6 +68,33 @@ async def get_sku_and_product(
 	if product is None:
 		return None
 	return sku, product
+
+
+async def get_sku_and_product_for_update(
+	db: AsyncSession, sku_id: UUID
+) -> tuple[Sku, Product] | None:
+	result = await db.execute(
+		select(Sku, Product)
+		.join(Product, Product.id == Sku.product_id)
+		.where(Sku.id == sku_id)
+		.with_for_update()
+	)
+	row = result.one_or_none()
+	if row is None:
+		return None
+	sku, product = row
+	return sku, product
+
+
+async def delete_sku(db: AsyncSession, sku: Sku) -> None:
+	await db.execute(
+		delete(Image).where(
+			Image.entity_type == ImageEntityTypeEnum.SKU,
+			Image.entity_id == sku.id,
+		)
+	)
+	await db.delete(sku)
+	await db.flush()
 
 
 async def attach_sku_image(
@@ -101,6 +134,11 @@ async def update(
 	data.pop("images", None)
 	data.pop("reserved_quantity", None)
 
+	if should_remoderate and product is not None:
+		json_before = await product_crud.build_product_snapshot(db, product)
+	else:
+		json_before = None
+
 	for key, value in data.items():
 		setattr(sku, key, value)
 
@@ -117,7 +155,12 @@ async def update(
 			]
 		)
 	if should_remoderate and product is not None:
-		await product_crud.submit_for_moderation(db, product, event="EDITED")
+		await product_crud.submit_for_moderation(
+			db,
+			product,
+			event="EDITED",
+			json_before=json_before,
+		)
 
 	await db.commit()
 	await db.refresh(sku)

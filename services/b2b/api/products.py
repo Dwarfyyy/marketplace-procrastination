@@ -16,8 +16,8 @@ from exceptions.product import (
 from schemas.product import (
 	ProductCreate,
 	ProductDetailResponse,
+	ProductPaginatedResponse,
 	ProductResponse,
-	ProductSellerRead,
 	ProductUpdate,
 )
 from schemas.sku import SkuResponse
@@ -37,18 +37,19 @@ async def create_product(
 	return await product_service.create_new_product(db, product_in, seller_id)
 
 
-@router.get("/", response_model=list[ProductSellerRead])
+@router.get("/", response_model=ProductPaginatedResponse)
 async def get_my_products(
 	request: Request,
 	db: Annotated[AsyncSession, Depends(get_db)],
-	product_status: Annotated[
-		ProductStatusEnum | None, Query(alias="status")
-	] = None,
+	product_status: Annotated[ProductStatusEnum | None, Query(alias="status")] = None,
 	search: str | None = None,
-) -> list[ProductSellerRead]:
+	limit: Annotated[int, Query(ge=1, le=100)] = 20,
+	offset: Annotated[int, Query(ge=0)] = 0,
+	include_deleted: bool = True,
+) -> ProductPaginatedResponse:
 	seller_id = uuid.UUID(str(getattr(request.state, "user_id", None)))
 	return await product_service.get_all_seller_products(
-		db, seller_id, product_status, search
+		db, seller_id, product_status, search, limit, offset, include_deleted
 	)
 
 

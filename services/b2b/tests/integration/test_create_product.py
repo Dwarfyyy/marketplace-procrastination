@@ -85,7 +85,7 @@ async def test_seller_id_taken_from_jwt(
 	assert response.json()["seller_id"] == str(create_product_data.seller.id)
 
 
-async def test_missing_images_returns_400(
+async def test_optional_slug_and_images_can_be_omitted(
 	client: AsyncClient,
 	create_product_data: CreateProductData,
 	db_session: AsyncSession,
@@ -97,14 +97,13 @@ async def test_missing_images_returns_400(
 			"category_id": str(create_product_data.category.id),
 			"title": "Test product",
 			"description": "Some smart words",
-			"slug": "some-product",
 		},
 	)
 
-	assert response.status_code == 400
-	assert response.json()["code"] == "VALIDATION_ERROR"
-	assert "images" in response.json()["message"]
-	assert set(response.json()) == {"code", "message"}
+	assert response.status_code == 201
+	body = response.json()
+	assert body["slug"].startswith("product-")
+	assert body["images"] == []
 
 
 async def test_missing_category_returns_400(

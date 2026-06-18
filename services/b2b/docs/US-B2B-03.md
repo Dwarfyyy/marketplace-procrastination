@@ -4,7 +4,7 @@
 
 Редактирование карточки товара и SKU с повторной отправкой на модерацию при необходимости.
 
-**Повторная модерация:** если товар в статусе `MODERATED` или `BLOCKED`, после успешного изменения статус меняется на `ON_MODERATION`, в outbox пишется событие `PRODUCT_EDITED` в форме `{event_type, idempotency_key, occurred_at, payload}`. Доставка - transactional outbox (`outbox_events`) + worker - RabbitMQ - сервис Moderation.
+**Повторная модерация:** если товар в статусе `MODERATED` или `BLOCKED`, после успешного изменения статус меняется на `ON_MODERATION`, в outbox пишется событие `PRODUCT_EDITED` в форме `{event_type, idempotency_key, occurred_at, payload}`. Вложенный `payload` содержит обязательные снимки полной карточки `json_before` и `json_after`. Доставка - transactional outbox (`outbox_events`) + worker - RabbitMQ - сервис Moderation.
 
 ### API
 

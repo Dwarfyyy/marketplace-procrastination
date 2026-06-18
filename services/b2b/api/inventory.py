@@ -9,17 +9,22 @@ from exceptions.sku import (
 	SkuInsufficientStockError,
 	SkuNotFoundError,
 )
-from schemas.inventory import InventoryRequest, InventoryResponse
+from schemas.inventory import (
+	InventoryOrderRequest,
+	InventoryOrderResponse,
+	ReserveRequest,
+	ReserveResponse,
+)
 from services import inventory_service
 
-router = APIRouter(tags=["Inventory"])
+router = APIRouter(prefix="/inventory", tags=["Inventory"])
 
 
 async def _execute(
 	db: AsyncSession,
-	request: InventoryRequest,
+	request: ReserveRequest | InventoryOrderRequest,
 	operation: str,
-) -> InventoryResponse:
+) -> ReserveResponse | InventoryOrderResponse:
 	try:
 		if operation == "RESERVE":
 			return await inventory_service.reserve(db, request)
@@ -38,17 +43,17 @@ async def _execute(
 		) from exc
 
 
-@router.post("/reserve", response_model=InventoryResponse)
+@router.post("/reserve", response_model=ReserveResponse)
 async def reserve(
-	request: InventoryRequest,
+	request: ReserveRequest,
 	db: Annotated[AsyncSession, Depends(get_db)],
-) -> InventoryResponse:
+) -> ReserveResponse:
 	return await _execute(db, request, "RESERVE")
 
 
-@router.post("/unreserve", response_model=InventoryResponse)
+@router.post("/unreserve", response_model=InventoryOrderResponse)
 async def unreserve(
-	request: InventoryRequest,
+	request: InventoryOrderRequest,
 	db: Annotated[AsyncSession, Depends(get_db)],
-) -> InventoryResponse:
+) -> InventoryOrderResponse:
 	return await _execute(db, request, "UNRESERVE")

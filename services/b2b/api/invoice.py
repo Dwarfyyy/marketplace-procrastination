@@ -63,7 +63,7 @@ async def get_invoice_endpoint(
 	invoice_id: UUID, db: Annotated[AsyncSession, Depends(get_db)]
 ) -> InvoiceResponse:
 	try:
-		return await invoice_service.accept_invoice(db, invoice_id)
+		return await invoice_service.get_invoice(db, invoice_id)
 	except InvoiceNotFoundError as e:
 		raise HTTPException(status_code=404, detail=str(e)) from e
 	except InvalidInvoiceStatusError as e:

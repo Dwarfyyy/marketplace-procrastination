@@ -12,7 +12,7 @@ from exceptions.sku import (
 from schemas.fulfill import FulfillRequest, FulfillResponse
 from services import fulfill_service
 
-router = APIRouter(tags=["Inventory"])
+router = APIRouter(prefix="/inventory", tags=["Inventory"])
 
 
 @router.post("/fulfill", response_model=FulfillResponse)

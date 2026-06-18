@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from schemas.product import (
 	ProductCreate,
 	ProductDetailResponse,
 	ProductImageResponse,
+	ProductPaginatedResponse,
 	ProductResponse,
 	ProductSellerRead,
 	ProductUpdate,
@@ -128,7 +129,7 @@ async def create_new_product(
 		seller_id=seller_id,
 		category_id=product_in.category_id,
 		title=product_in.title,
-		slug=product_in.slug,
+		slug=product_in.slug or f"product-{uuid4().hex}",
 		description=product_in.description,
 		status=ProductStatusEnum.CREATED,
 		deleted=False,
@@ -173,25 +174,35 @@ async def get_all_seller_products(
 	seller_id: UUID,
 	status: ProductStatusEnum | None = None,
 	search: str | None = None,
-) -> list[ProductSellerRead]:
-	rows = await product_crud.get_seller_products(db, seller_id, status, search)
-	return [
-		ProductSellerRead(
-			id=product.id,
-			seller_id=product.seller_id,
-			title=product.title,
-			slug=product.slug,
-			description=product.description,
-			status=product.status,
-			category_id=product.category_id,
-			deleted=product.deleted,
-			skus_count=skus_count,
-			total_active_quantity=total_active_quantity,
-			created_at=product.created_at,
-			updated_at=product.updated_at,
-		)
-		for product, skus_count, total_active_quantity in rows
-	]
+	limit: int = 20,
+	offset: int = 0,
+	include_deleted: bool = True,
+) -> ProductPaginatedResponse:
+	rows, total_count = await product_crud.get_seller_products(
+		db, seller_id, status, search, limit, offset, include_deleted
+	)
+	return ProductPaginatedResponse(
+		items=[
+			ProductSellerRead(
+				id=product.id,
+				seller_id=product.seller_id,
+				title=product.title,
+				slug=product.slug,
+				description=product.description,
+				status=product.status,
+				category_id=product.category_id,
+				deleted=product.deleted,
+				skus_count=skus_count,
+				total_active_quantity=total_active_quantity,
+				created_at=product.created_at,
+				updated_at=product.updated_at,
+			)
+			for product, skus_count, total_active_quantity in rows
+		],
+		total_count=total_count,
+		limit=limit,
+		offset=offset,
+	)
 
 
 async def update_existing_product(
@@ -222,7 +233,9 @@ async def remove_product(
 	if product is None:
 		raise ProductNotFoundError("Product not found")
 	if product.seller_id != seller_id:
-		raise ProductNotOwnerError("Product does not belong to the authenticated seller")
+		raise ProductNotOwnerError(
+			"Product does not belong to the authenticated seller"
+		)
 	if product.status == ProductStatusEnum.HARD_BLOCKED:
 		raise ProductForbiddenError("Cannot delete hard-blocked product")
 	if product.deleted:

@@ -12,14 +12,17 @@ async def create_invoice(
 	"""Creates an invoice and its items in one transaction."""
 	db_invoice = Invoice(
 		seller_id=seller_id,
-		status=InvoiceStatusEnum.PENDING,
+		status=InvoiceStatusEnum.CREATED,
 	)
 	db.add(db_invoice)
 	await db.flush()
 
 	for item in invoice_data.items:
 		db_item = InvoiceItem(
-			invoice_id=db_invoice.id, sku_id=item.sku_id, quantity=item.quantity
+			invoice_id=db_invoice.id,
+			sku_id=item.sku_id,
+			quantity=item.quantity,
+			accepted_quantity=None,
 		)
 		db.add(db_item)
 
@@ -77,6 +80,9 @@ async def update_invoice_status(
 
 
 async def update_invoice_to_accepted(db: AsyncSession, invoice: Invoice) -> Invoice:
+	for item in invoice.items:
+		item.accepted_quantity = item.quantity
+		db.add(item)
 	invoice.status = InvoiceStatusEnum.ACCEPTED
 	invoice.accepted_at = func.now()
 

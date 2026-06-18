@@ -5,18 +5,18 @@
 Реализован service-to-service endpoint:
 
 ```http
-POST /api/v1/events/moderation
+POST /api/v1/moderation/events
 X-Service-Key: <MODERATION_SERVICE_KEY>
 ```
 
-Endpoint принимает `idempotency_key`, `product_id`, решение `status` и данные
-блокировки. Для совместимости также принимается имя поля `event_type`.
+Endpoint принимает `idempotency_key`, `product_id`, решение `event_type` и данные
+блокировки. Успешная обработка и идемпотентный повтор возвращают `204 No Content`.
 
 - `MODERATED` переводит товар в `MODERATED` и очищает причины блокировки.
 - `BLOCKED` с `hard_block=false` переводит товар в `BLOCKED`.
 - `BLOCKED` с `hard_block=true` переводит товар в `HARD_BLOCKED`.
 - Любая блокировка создаёт outbox-событие `PRODUCT_BLOCKED` для B2C.
-- Повтор обработанного `idempotency_key` возвращает `200` без side effects.
+- Повтор обработанного `idempotency_key` возвращает `204` без side effects.
 
 Все 4xx-ответы используют плоский контракт `{code, message}`.
 

@@ -21,6 +21,10 @@ class SkuValidationError(SkuError):
 	"""Raised when SKU request data fails business validation."""
 
 
+class SkuActiveReservesError(SkuError):
+	"""Raised when a SKU with active reserves cannot be deleted."""
+
+
 class SkuInsufficientStockError(SkuError):
 	"""Raised when an inventory operation cannot be applied atomically."""
 

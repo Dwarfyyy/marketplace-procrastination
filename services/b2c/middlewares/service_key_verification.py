@@ -5,11 +5,13 @@ from core.config import settings
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-PRODUCT_EVENTS_PATH = "/api/v1/events/product"
+PRODUCT_EVENTS_PATH = "/api/v1/b2b/events"
+ORDER_DELIVERED_EVENTS_PATH = "/api/v1/events/order-delivered"
+SERVICE_PATHS = {PRODUCT_EVENTS_PATH, ORDER_DELIVERED_EVENTS_PATH}
 
 
 def is_service_request(request: Request) -> bool:
-	return request.url.path == PRODUCT_EVENTS_PATH
+	return request.url.path in SERVICE_PATHS
 
 
 async def verify_service_key(request: Request, call_next: Callable) -> JSONResponse:

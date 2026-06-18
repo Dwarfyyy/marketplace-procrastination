@@ -97,7 +97,6 @@ app.middleware("http")(verify_token)
 app.middleware("http")(verify_service_key)
 
 app.include_router(product.router)
-app.include_router(product.catalog_products_router)
 app.include_router(breadcrumbs.router)
 app.include_router(cart.router)
 app.include_router(events.router)

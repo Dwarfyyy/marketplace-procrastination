@@ -1,8 +1,10 @@
+from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from schemas.inventory import InventoryItemRequest, InventoryItemResponse
+from schemas.inventory import InventoryItemRequest
 
 
 class FulfillRequest(BaseModel):
@@ -12,4 +14,5 @@ class FulfillRequest(BaseModel):
 
 class FulfillResponse(BaseModel):
 	order_id: UUID
-	items: list[InventoryItemResponse]
+	status: Literal["FULFILLED"]
+	processed_at: datetime

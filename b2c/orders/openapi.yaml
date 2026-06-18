@@ -238,7 +238,7 @@ paths:
                 code: NOT_FOUND
                 message: "Order not found"
 
-  /events/product:
+  /b2b/events:
     post:
       summary: Событие об изменении товара от B2B
       description: >
@@ -340,6 +340,78 @@ paths:
                 code: CANCEL_NOT_ALLOWED
                 message: "Can't cancel order in this state"
 
+  /events/order-delivered:
+    post:
+      summary: Событие "заказ доставлен" — финальное списание резерва
+      description: >
+        Вызывается службой доставки/логистики при переходе заказа в
+        `DELIVERED`. Переводит заказ в `DELIVERED` (если ещё не в этом
+        статусе) и выполняет `fulfill` в "B2B": списывает
+        `reserved_quantity` по каждому `OrderItem` заказа
+        (`reserved_quantity = max(0, reserved_quantity - quantity)`),
+        `active_quantity` не меняется — товар физически выдан покупателю и
+        не возвращается на склад.
+
+        Идемпотентность: повторный вызов с тем же `order_id` для уже
+        выполненного `fulfill` (`orders.fulfilled_at` заполнен) возвращает
+        `200` без повторного списания.
+
+        Если списание резерва падает (`SQLAlchemyError`) — заказ остаётся
+        `DELIVERED`, `fulfilled_at` не заполняется, ошибка логируется;
+        повторная попытка выполняется асинхронным ретраем (см.
+        [flows/b2c-orders-flows.md#b2c-13-fulfill](../../flows/b2c-orders-flows.md#b2c-13-fulfill)).
+        Откат в предыдущий статус не выполняется — товар уже у покупателя.
+
+        Эндпоинт защищён заголовком `X-Service-Key`, как
+        `POST /api/v1/b2b/events`.
+      operationId: receiveOrderDeliveredEvent
+      tags:
+        - events
+      security:
+        - serviceKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderDeliveredEventRequest"
+      responses:
+        "200":
+          description: >
+            Заказ переведён в `DELIVERED` и/или резерв списан (или повторный
+            вызов для уже выполненного fulfill — без изменений)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          description: Отсутствует или неверен `X-Service-Key`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Invalid or missing service key"
+        "404":
+          description: Заказ не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Order not found"
+        "409":
+          description: Заказ отменён — доставка невозможна
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: DELIVER_NOT_ALLOWED
+                message: "Can't deliver a cancelled order"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -434,6 +506,15 @@ components:
           type: string
           maxLength: 500
           nullable: true
+
+    OrderDeliveredEventRequest:
+      type: object
+      required:
+        - order_id
+      properties:
+        order_id:
+          type: string
+          format: uuid
 
     OrderItem:
       type: object

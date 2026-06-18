@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.db import get_db
 from database.models.catalog.base import ProductStatusEnum
 from exceptions.product import ProductNotFoundError
-from schemas.product import ProductSellerRead
+from schemas.product import ProductPaginatedResponse
 from schemas.public_catalog import (
 	ProductPublicPaginatedResponse,
 	ProductPublicResponse,
@@ -53,7 +53,7 @@ def _parse_seller_id(raw_seller_id: str | None) -> UUID | None:
 
 @router.get(
 	"/products",
-	response_model=ProductPublicPaginatedResponse | list[ProductSellerRead],
+	response_model=ProductPublicPaginatedResponse | ProductPaginatedResponse,
 )
 async def list_products_for_b2c(
 	request: Request,
@@ -67,16 +67,18 @@ async def list_products_for_b2c(
 	min_price: Annotated[int | None, Query(ge=0)] = None,
 	max_price: Annotated[int | None, Query(ge=0)] = None,
 	sort: Annotated[PublicSort, Query()] = "created_desc",
-	product_status: Annotated[
-		ProductStatusEnum | None, Query(alias="status")
-	] = None,
-) -> ProductPublicPaginatedResponse | list[ProductSellerRead]:
+	product_status: Annotated[ProductStatusEnum | None, Query(alias="status")] = None,
+	include_deleted: bool = True,
+) -> ProductPublicPaginatedResponse | ProductPaginatedResponse:
 	if seller_user_id := getattr(request.state, "user_id", None):
 		return await product_service.get_all_seller_products(
 			db,
 			UUID(str(seller_user_id)),
 			product_status,
 			search,
+			limit,
+			offset,
+			include_deleted,
 		)
 	return await public_catalog_service.list_public_catalog(
 		db,

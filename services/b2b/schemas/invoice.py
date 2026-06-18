@@ -15,6 +15,7 @@ class InvoiceItemResponse(BaseModel):
 	id: UUID
 	sku_id: UUID
 	quantity: int
+	accepted_quantity: int | None = None
 
 	model_config = ConfigDict(from_attributes=True)
 

@@ -75,7 +75,9 @@ async def test_delete_emits_product_deleted_to_b2c(
 	await _delete_owned_product(client, db_session, delete_product_data)
 
 	events = await _events_for_product(db_session, delete_product_data.product.id)
-	b2c_events = [event for event in events if event.routing_key == "b2c.product.deleted"]
+	b2c_events = [
+		event for event in events if event.routing_key == "b2c.product.deleted"
+	]
 	assert len(b2c_events) == 1
 	event = b2c_events[0]
 	assert event.event_type == "PRODUCT_DELETED"
@@ -101,7 +103,9 @@ async def test_delete_already_deleted_returns_400(
 	assert response.status_code == 400
 	assert response.json()["code"] == "ALREADY_DELETED"
 	assert set(response.json()) == {"code", "message"}
-	assert len(await _events_for_product(db_session, delete_product_data.product.id)) == 2
+	assert (
+		len(await _events_for_product(db_session, delete_product_data.product.id)) == 2
+	)
 
 
 async def test_deleted_product_visible_in_seller_list(
@@ -117,7 +121,7 @@ async def test_deleted_product_visible_in_seller_list(
 	assert response.status_code == 200
 	deleted = next(
 		product
-		for product in response.json()
+		for product in response.json()["items"]
 		if product["id"] == str(delete_product_data.product.id)
 	)
 	assert deleted["deleted"] is True
