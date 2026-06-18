@@ -2,715 +2,88 @@
 
 Канонические user-flow для блока "Заказы" B2C-приложения.
 
-## B2C-9. Оформление заказа (checkout) {#b2c-9-checkout}
-
-### Контекст
-
-Checkout — точка невозврата: после успешного резерва товар физически
-зарезервирован на складе и заказ создан в БД. Это самый "опасный" эндпоинт
-блока заказов:
-
-- **Двойной клик/повтор запроса** не должен создавать два заказа — иначе с
-  покупателя дважды списываются деньги (в этой сборке — мок-оплата, но семантика
-  та же: дважды зарезервированный товар и два заказа на один реальный платёж).
-- **Частичная недоступность товара** (один SKU пропал/заблокирован/не хватает
-  остатка) должна откатывать **весь** заказ — нельзя оформить заказ из части
-  корзины без согласия покупателя.
-- **Цена фиксируется на момент оформления**: даже если продавец поднимет цену
-  через час, уже оформленный заказ должен сохранить цену, по которой покупатель
-  согласился купить.
-
-### Идентификация пользователя
-
-`POST /api/v1/orders` находится под `Authorization: Bearer <token>` (закрыт
-`PRIVATE_PATHS_PREFIXES`, как и "Избранное"/корзина пользователя — см.
-[b2c-cart-flows.md](b2c-cart-flows.md)). `buyer_id` берётся **только** из
-`request.state.user_id`, заполненного middleware после проверки JWT. Без
-`Authorization` — `401 UNAUTHORIZED`.
-
-### Идемпотентность
-
-Каждый запрос `POST /api/v1/orders` несёт обязательный заголовок
-`Idempotency-Key` (UUID v4, генерируется клиентом — типично один раз на нажатие
-кнопки "Оформить заказ").
-
-Хранение: колонка `orders.idempotency_key` с **уникальным индексом** +
-`orders.idempotency_request_hash` (SHA-256 от нормализованного JSON тела
-запроса).
-
-Поведение:
-
-1. Если заказ с таким `idempotency_key` уже существует и
-   `idempotency_request_hash` совпадает с хешем текущего тела — вернуть
-   существующий заказ (`201`, тот же `OrderResponse`), **не выполняя** повторный
-   резерв.
-2. Если заказ с таким `idempotency_key` существует, но хеш тела отличается —
-   `409 IDEMPOTENCY_CONFLICT` (ключ переиспользован с другим телом запроса —
-   вероятная ошибка клиента).
-3. Если заказа с таким ключом нет — выполнить полный алгоритм checkout ниже.
-   На случай гонки (два параллельных запроса с одним и тем же новым
-   `idempotency_key`) уникальный индекс на `idempotency_key` гарантирует, что
-   `INSERT` второго запроса упадёт с `IntegrityError`; в этом случае сервис
-   повторно читает существующую запись по ключу и возвращает её (см. ADR ниже).
-
-См. ADR — выбор хранения идемпотентности, в конце раздела.
-
-### Алгоритм (`POST /api/v1/orders`)
-
-1. **Проверка идемпотентности** (см. выше) — если есть совпадение по ключу,
-   вернуть существующий заказ без побочных эффектов.
-2. **Проверка ссылок**: `address_id` и `payment_method_id` должны существовать
-   и принадлежать текущему покупателю — иначе `404 NOT_FOUND`
-   (`AddressNotFoundError` / `PaymentMethodNotFoundError`).
-3. **Валидация корзины**: корзина не должна быть пустой (`400 BAD_REQUEST`,
-   `EmptyCartError`, если пуста). Затем выполняется та же проверка, что и
-   `POST /cart/validate` (см. [b2c-cart-flows.md#b2c-8-cart](b2c-cart-flows.md#b2c-8-cart));
-   если корзина невалидна (`is_valid = false`) — `422 VALIDATION_ERROR` с телом
-   `CartValidationResponse` в `details`, заказ не создаётся.
-4. **Проверка снапшота** (опционально, `items_snapshot` в теле запроса) —
-   защита от гонки "цена/состав корзины изменились между показом итогов и
-   нажатием кнопки": если переданный снапшот не совпадает с текущим составом
-   корзины, поведение совпадает с шагом 3 (`422`).
-5. **Reserve в B2B (all-or-nothing)**: для каждого `sku_id` корзины блокируется
-   строка SKU (`SELECT ... FOR UPDATE`) и проверяется доступность — товар не
-   удалён, не заблокирован, статус `MODERATED`, `active_quantity >= quantity`.
-   Если **хотя бы один** SKU не проходит проверку — вся транзакция откатывается,
-   `409 RESERVE_FAILED` с `details: [{sku_id, requested, available?, reason}]`
-   по **всем** непрошедшим SKU (а не только первому). Зарезервированные до этого
-   момента SKU откатываются вместе с транзакцией — ничего не остаётся
-   "наполовину зарезервированным".
-6. **Создание заказа и фиксация цен**: при успешном резерве на каждый SKU
-   `active_quantity -= quantity`, `reserved_quantity += quantity`; создаётся
-   `Order` (`status = PAID` — мок-оплата применяется немедленно) и по одному
-   `OrderItem` на позицию корзины с **зафиксированными на момент покупки**
-   `unit_price`, `product_title`, `sku_name`, `line_total = unit_price *
-   quantity`. `Order.subtotal` / `Order.total` — сумма `line_total`.
-7. Вернуть `201 Created` с `OrderResponse`.
-
-Шаги 5-6 выполняются в одной транзакции (`db.begin_nested()`/`db.begin()`):
-ошибка на любом шаге откатывает и резерв, и созданный заказ целиком.
-
-После успешного checkout фронт самостоятельно очищает корзину
-(`DELETE /api/v1/cart`, см. [b2c-cart-flows.md#b2c-8-cart](b2c-cart-flows.md#b2c-8-cart))
-— очистка не входит в транзакцию checkout.
-
-### "B2B" недоступен
-
-В этой сборке "B2B"-каталог — таблицы `catalog.products`/`catalog.skus` в той
-же БД (см. [b2c-cart-flows.md](b2c-cart-flows.md), раздел "Batch-обогащение из
-B2B"). Если запрос к этим таблицам на шаге 5 падает с ошибкой соединения/БД
-(`SQLAlchemyError`, кроме `IntegrityError` — он обрабатывается отдельно как
-гонка идемпотентности) — `503 B2B_UNAVAILABLE`. Заказ не создаётся, резерв не
-применяется (транзакция не закоммичена).
-
-### Edge cases
-
-- **Повторный запрос с тем же `Idempotency-Key` и тем же телом** → `201` с
-  тем же заказом, без повторного резерва (`idempotency_returns_existing_order`).
-- **Тот же `Idempotency-Key`, другое тело** → `409 IDEMPOTENCY_CONFLICT`.
-- **Один SKU из корзины недоступен** (удалён/заблокирован/нет остатка) → `409
-  RESERVE_FAILED`, заказ не создаётся, остальные SKU тоже не резервируются
-  (`partial_reserve_failure_returns_409`).
-- **Корзина пуста** → `400 BAD_REQUEST`.
-- **Корзина невалидна** (`cart/validate.is_valid = false`, напр. изменилась
-  цена/остаток) → `422 VALIDATION_ERROR`.
-- **`address_id`/`payment_method_id` не принадлежат пользователю или не
-  существуют** → `404 NOT_FOUND`.
-- **БД каталога ("B2B") недоступна** → `503 B2B_UNAVAILABLE`
-  (`b2b_unavailable_returns_503`).
-- **Без `Authorization`** → `401 UNAUTHORIZED`.
-
-### Сценарии (тесты)
-
-- `checkout_creates_paid_order_with_fixed_prices`
-  (`test_checkout_creates_paid_order_with_fixed_prices`) — happy path: заказ
-  создаётся со статусом `PAID`, `OrderItem.unit_price`/`line_total` фиксируют
-  цену SKU на момент оформления, `subtotal`/`total` — сумма по позициям.
-- `partial_reserve_failure_returns_409`
-  (`test_partial_reserve_failure_returns_409`) — один SKU из корзины
-  заблокирован (`PRODUCT_BLOCKED`) → `409 RESERVE_FAILED` с `details`, заказ
-  не создаётся, резерв остальных SKU откатывается.
-- `idempotency_returns_existing_order`
-  (`test_idempotency_returns_existing_order`) — повторный
-  `POST /api/v1/orders` с тем же `Idempotency-Key` и тем же телом возвращает
-  существующий заказ (`201`, тот же `id`), без повторного резерва.
-- `b2b_unavailable_returns_503` (`test_b2b_unavailable_returns_503`) — ошибка
-  БД при резерве SKU → `503 B2B_UNAVAILABLE`, заказ не создаётся.
-- `test_cart_validation_error_returns_422` — невалидная корзина (напр.
-  `active_quantity = 0` у SKU) → `422`, заказ не создаётся.
-- `test_order_not_authorized_returns_401` — без `Authorization` → `401`.
-
-### Примечания
-
-- Канон (`b2c/openapi.yaml`) описывает `OrderCreateRequest` с обязательными
-  `address_id`/`payment_method_id` и опциональными `comment`/`items_snapshot` —
-  реализация соответствует.
-- Канон допускает `400 Bad Request` для общих ошибок валидации и `422` для
-  `cart/validate`-несовместимости — реализация разделяет их так же
-  (`EmptyCartError` → `400`, `is_valid = false` → `422`).
-- `503 B2B_UNAVAILABLE` не описан явно в канон-тексте для checkout, но
-  соответствует общему правилу проекта (см. `b2c/catalog/openapi.yaml`,
-  `B2B_UNAVAILABLE`) — для checkout используется `503` (а не `502`, как в
-  каталоге), так как недоступность каталога на этапе резерва — временная
-  проблема сервиса-зависимости, а не проблема самого запроса.
-
-### ADR — хранение идемпотентности checkout
-
-Рассмотрены три варианта хранения идемпотентности `POST /api/v1/orders`:
-
-1. **Уникальный индекс на `orders.idempotency_key` + `idempotency_request_hash`
-   в той же таблице** (выбрано).
-2. **Отдельная таблица-кэш ключей** (`idempotency_keys`: `key`, `request_hash`,
-   `response_body`, `expires_at`), не привязанная к конкретной сущности.
-3. **Redis** (`SET key response NX EX 3600`) — кэш с TTL вне основной БД.
-
-Критерии: (а) поведение при гонке (два параллельных запроса с одним
-`Idempotency-Key`) и (б) сложность реализации.
-
-Выбран вариант 1. При гонке оба запроса проходят валидацию и резерв
-параллельно (в разных транзакциях); `INSERT` в `orders` с одинаковым
-`idempotency_key` для одного из них упадёт с `IntegrityError` благодаря
-уникальному индексу — проигравший запрос перечитывает уже созданную строку по
-`idempotency_key` и возвращает её как свой результат (так же, как и при обычном
-повторе). Реализация простая: не нужна ни отдельная таблица, ни внешняя
-зависимость — гарантия атомарности обеспечивается тем же `UNIQUE`-индексом БД,
-который уже обслуживает основной сценарий повторного запроса.
-
-Вариант 2 (отдельная таблица-кэш) даёт тот же эффект для гонки (тот же `UNIQUE`
-на `key`), но требует синхронизировать две записи (ключ + заказ) и хранить
-сериализованный ответ отдельно от доменных данных — дополнительная сложность
-без выигрыша для этого сценария, где идемпотентность естественно привязана к
-одной сущности (`Order`).
-
-Вариант 3 (Redis) был бы оправдан, если бы идемпотентность нужна была для
-операций без естественного уникального ключа в БД (напр. вызовы внешних API)
-или требовался TTL короче времени жизни заказа; здесь TTL не нужен — заказ
-существует всегда, и Redis добавил бы внешнюю зависимость и риск
-рассинхронизации (ключ в Redis есть, а заказ не создан из-за сбоя между
-`SET` и `INSERT`) без выигрыша для гонки, которая и так покрыта `UNIQUE`-индексом.
-
-## B2C-10. Просмотр и отслеживание заказов {#b2c-10-view-orders}
-
-### Контекст
-
-Покупатель возвращается в "Мои заказы", чтобы проверить статус и историю
-покупок. Два эндпоинта:
-
-- `GET /api/v1/orders` — список заказов покупателя с пагинацией и
-  опциональным фильтром по статусу.
-- `GET /api/v1/orders/{order_id}` — детали одного заказа.
-
-### Идентификация пользователя
-
-Оба эндпоинта находятся под `Authorization: Bearer <token>`. `buyer_id`
-берётся **только** из `request.state.user_id` (JWT claims, проверенные
-middleware) — никогда из query-параметров или тела запроса. Без
-`Authorization` — `401 UNAUTHORIZED`.
-
-### `GET /api/v1/orders` — список заказов
-
-Параметры запроса:
-
-- `limit` (1..100, по умолчанию 20) и `offset` (>=0, по умолчанию 0) —
-  пагинация.
-- `status` (опционально) — фильтр по одному из значений `OrderStatus`
-  (`CREATED`, `PAID`, `ASSEMBLING`, `DELIVERING`, `DELIVERED`, `CANCELLED`,
-  `CANCEL_PENDING`).
-
-Запрос всегда фильтруется по `buyer_id = request.state.user_id` — покупатель
-не может получить чужие заказы ни при каких значениях `limit`/`offset`/
-`status`. Заказы сортируются по `created_at` по убыванию (новые сверху).
-Ответ — `PaginatedOrders`: `items` (список `OrderResponse`), `total_count`,
-`limit`, `offset`.
-
-### `GET /api/v1/orders/{order_id}` — детали заказа
-
-Возвращает `OrderResponse` для заказа текущего покупателя, включая
-`OrderItem[]` с **зафиксированными на момент checkout** `unit_price`,
-`name` (`product_title`) и `sku_code` (`sku_name`) — см.
-[B2C-9](#b2c-9-checkout). Даже если продавец впоследствии изменит цену SKU в
-каталоге, ранее оформленный заказ продолжает показывать цену, по которой
-покупатель фактически оплатил.
-
-### IDOR-защита: всегда 404, никогда 403
-
-И список, и детали заказа используют один и тот же принцип: запрос к БД
-**сразу** фильтруется по паре `(order_id, buyer_id)` —
-`select(Order).where(Order.id == order_id, Order.buyer_id == buyer_id)`. Если
-заказ существует, но принадлежит другому покупателю, этот запрос вернёт
-`None` — ровно так же, как если бы заказа с таким `id` не существовало вовсе.
-Сервис в обоих случаях поднимает `OrderNotFoundError`, а API отвечает
-`404 NOT_FOUND`.
-
-Почему не `403 Forbidden`: если бы сервис сначала проверял существование
-заказа по `id` (без фильтра по `buyer_id`), а затем отдельно проверял
-владельца и возвращал `403`, разница в коде ответа (`403` vs `404`) превратилась
-бы в **oracle** — злоумышленник, перебирая UUID, мог бы по коду ответа узнать,
-существует ли заказ с данным `id` в системе вообще (даже не имея доступа к
-нему). Возвращая `404` в обоих случаях ("заказа нет" и "заказ есть, но не
-ваш"), API не даёт способа отличить эти ситуации снаружи.
-
-### Edge cases
-
-- **Без `Authorization`** → `401 UNAUTHORIZED` (оба эндпоинта).
-- **`order_id` не существует** → `404 NOT_FOUND`.
-- **`order_id` существует, но принадлежит другому покупателю** → `404
-  NOT_FOUND` (не `403` — см. выше).
-- **Список заказов пуст** (нет заказов / фильтр по `status` не дал совпадений)
-  → `200` с `items: []`, `total_count: 0`.
-- **Цена SKU изменилась после оформления заказа** → `OrderItem.unit_price` в
-  ответе остаётся равным цене на момент checkout (берётся из `OrderItem`, не
-  из текущего `Sku.price`).
-
-### Сценарии (тесты)
-
-- `orders_list_returns_own_orders_paginated`
-  (`test_orders_list_returns_own_orders_paginated`) — happy path: список
-  заказов покупателя с `limit`/`offset`, `items[0].id` совпадает с заказом из
-  фикстуры.
-- `order_detail_shows_fixed_prices` (`test_order_detail_shows_fixed_prices`) —
-  цена SKU меняется после оформления заказа, но `OrderItem.unit_price` в
-  ответе остаётся прежним.
-- `other_user_order_returns_404_not_403`
-  (`test_other_user_order_returns_404_not_403`) — запрос
-  `GET /orders/{order_id}` от имени другого покупателя возвращает `404
-  NOT_FOUND` (не `403`).
-- `test_orders_list_empty_with_status_filter` — фильтр по статусу, для
-  которого у покупателя нет заказов, возвращает `items: []`, `total_count: 0`.
-- `test_order_detail_not_authorized_returns_401` /
-  `test_orders_list_not_authorized_returns_401` — без `Authorization` →
-  `401`.
-
-### ADR — защита от IDOR при получении заказа по ID
-
-Рассмотрены три варианта проверки владения заказом в
-`get_order_by_id_for_buyer` / `get_buyer_orders`:
-
-1. **Совмещённый фильтр в одном запросе**:
-   `select(Order).where(Order.id == order_id, Order.buyer_id == buyer_id)`,
-   `None` → `OrderNotFoundError` → `404` (выбрано, уже в коде).
-2. **`get(id=order_id)` + отдельная проверка владельца**: загрузить заказ по
-   `id`, затем сравнить `order.buyer_id == buyer_id` и вручную поднять `404`
-   (или `403`) при несовпадении.
-3. **Permission class / scope на уровне зависимости FastAPI**: общая
-   зависимость, которая заранее резолвит "заказ + владелец" и инжектит готовый
-   объект в обработчик, поднимая `404` до вызова бизнес-логики.
-
-Критерии: читаемость кода и поведение при неожиданном отсутствии заказа.
-
-Выбран вариант 1. По читаемости он компактнее варианта 2 — нет отдельной
-ветки `if order.buyer_id != buyer_id`, которую легко по ошибке превратить в
-`403` (а это и есть IDOR-oracle, который мы хотим избежать). По поведению при
-отсутствии заказа вариант 1 даёт ровно один путь и один код ответа: "не найдено
-с этим `id` у этого покупателя" — `None` из БД, без необходимости различать
-"заказа нет" и "заказ чужой" в коде сервиса вообще, что само по себе исключает
-случайную утечку через `403`.
-
-Вариант 2 был бы оправдан, если бы для "чужого" заказа требовалось другое
-поведение, чем для "несуществующего" (например, логировать попытку доступа к
-чужому заказу отдельно от 404 на несуществующий `id`) — но это создало бы
-именно тот `403`-oracle, который запрещён правилом проекта. Вариант 3
-(permission class) был бы полезен, если бы такая же проверка владения
-повторялась в 4+ разных эндпоинтах с разными ресурсами — здесь же она нужна
-только в `crud/order.py` для двух похожих функций (`get_order_by_id_for_buyer`,
-`get_buyer_orders`), и выделение зависимости добавило бы непрямую косвенность
-без выигрыша.
-
 ## B2C-11. Отмена заказа {#b2c-11-cancel-order}
 
 ### Контекст
 
-Покупатель передумал — это его право, пока заказ не ушёл в сборку. Отмена
-освобождает резерв, выставленный на шаге 5 [B2C-9](#b2c-9-checkout)
+Покупатель передумал — это его право, пока заказ не ушёл в финальный статус.
+Отмена освобождает резерв, выставленный на шаге checkout
 (`active_quantity += quantity`, `reserved_quantity -= quantity` по каждому
-`OrderItem`).
+`OrderItem`), через HTTP-вызов к B2B инвентаризации.
 
 Это операция с двумя зависимостями: смена статуса заказа в своей БД (всегда
-доступна) и возврат резерва в "B2B"-каталоге (может быть недоступен — см.
-[B2C-9, "B2B недоступен"](#b2b-недоступен)). Эти две зависимости **не**
-должны быть атомарны с точки зрения ответа покупателю: если откат резерва
-падает, покупатель всё равно должен увидеть, что его *намерение отменить*
-принято — нельзя отвечать `503`/«попробуйте позже» на отмену, иначе зависший
-резерв продолжит блокировать остаток на складе, а покупатель не получит
-обратной связи и может повторить попытку, усугубляя проблему.
+доступна) и возврат резерва в B2B (`POST /api/v1/inventory/unreserve`, может
+быть недоступен). Эти две зависимости **не** должны быть атомарны с точки
+зрения ответа покупателю: если откат резерва падает, покупатель всё равно
+должен увидеть, что его *намерение отменить* принято — нельзя отвечать
+`503`/«попробуйте позже» на отмену, иначе зависший резерв продолжит
+блокировать остаток на складе, а покупатель не получит обратной связи.
 
 ### Идентификация пользователя и IDOR
 
 `POST /api/v1/orders/{order_id}/cancel` находится под
-`Authorization: Bearer <token>` (см. `PRIVATE_PATHS_PREFIXES`). `buyer_id` —
-только из `request.state.user_id`. Без `Authorization` → `401 UNAUTHORIZED`.
+`Authorization: Bearer <token>`. `buyer_id` — только из
+`request.state.user_id`. Без `Authorization` → `401 UNAUTHORIZED`.
 
-Поиск заказа использует тот же принцип, что и [B2C-10](#idor-защита-всегда-404-никогда-403):
-`select(Order).where(Order.id == order_id, Order.buyer_id == buyer_id)`. Если
-заказ не найден или принадлежит другому покупателю — `404 NOT_FOUND` в обоих
-случаях (никогда `403`).
+Поиск заказа: `select(Order).where(Order.id == order_id, Order.buyer_id ==
+buyer_id)`. Если заказ не найден или принадлежит другому покупателю — `404
+NOT_FOUND` в обоих случаях (никогда `403`, см. IDOR-принцип).
 
 ### Допустимые статусы для отмены
 
-Отмена разрешена только из `CREATED` и `PAID` — заказ ещё не передан на
-сборку, товар физически на складе, резерв можно безопасно вернуть. Любой
-другой статус (`ASSEMBLING`, `DELIVERING`, `DELIVERED`, `CANCELLED`,
-`CANCEL_PENDING`) → `409 CANCEL_NOT_ALLOWED`.
+Отмена разрешена из `CREATED`, `PAID`, `ASSEMBLING`. Любой другой статус
+(`DELIVERING`, `DELIVERED`, `CANCELLED`, `CANCEL_PENDING`) →
+`409 CANCEL_NOT_ALLOWED`.
 
 ### Алгоритм (`POST /api/v1/orders/{order_id}/cancel`)
 
 1. Найти заказ по `(order_id, buyer_id)` — если не найден, `404 NOT_FOUND`.
-2. Проверить `order.status in (CREATED, PAID)` — иначе `409
-   CANCEL_NOT_ALLOWED`.
-3. **Unreserve в B2B**: для каждого `OrderItem` заказа заблокировать
-   соответствующий `Sku` (`SELECT ... FOR UPDATE`) и вернуть резерв:
-   `active_quantity += quantity`, `reserved_quantity = max(0,
-   reserved_quantity - quantity)`. Выполняется в той же транзакционной
-   обвязке, что и резерв при checkout (`begin_nested`/`begin`).
-4. **Исход A — unreserve OK**: записать `OrderStatusHistory(status=CANCELLED,
-   reason=<тело запроса>.reason)`, `order.status = CANCELLED`. Вернуть `200`
-   с `OrderResponse` (статус `CANCELLED`).
-5. **Исход B — unreserve упал** (`SQLAlchemyError` при обращении к таблицам
-   `catalog.*`, по аналогии с [B2C-9 "B2B недоступен"](#b2b-недоступен)):
-   - **Не** возвращать `503`/ошибку покупателю — намерение отменить заказ
-     принято.
-   - Записать `OrderStatusHistory(status=CANCEL_PENDING, reason=<...>.reason)`,
+2. Проверить `order.status in (CREATED, PAID, ASSEMBLING)` — иначе
+   `409 CANCEL_NOT_ALLOWED`.
+3. **Unreserve в B2B**: `POST /api/v1/inventory/unreserve` с `order_id` и
+   списком `[{sku_id, quantity}]` из `OrderItem`.
+4. **Исход A — unreserve OK**: записать
+   `OrderStatusHistory(status=CANCELLED, reason=<body>.reason)`,
+   `order.status = CANCELLED`. Вернуть `200` с `OrderResponse`.
+5. **Исход B — unreserve упал** (`B2BUnavailableError`, `httpx.RequestError`):
+   - Записать `OrderStatusHistory(status=CANCEL_PENDING, reason=...)`,
      `order.status = CANCEL_PENDING`.
-   - Залогировать ошибку для последующего ретрая (на первой итерации — без
-     фактического retry-воркера, см. ADR ниже).
-   - Вернуть `200` с `OrderResponse` (статус `CANCEL_PENDING`) — покупатель
-     видит, что заказ в процессе отмены.
+   - Залогировать ошибку. Вернуть `200` с `OrderResponse` (статус
+     `CANCEL_PENDING`) — намерение отменить принято.
 6. Асинхронный retry (вне HTTP-запроса) повторяет unreserve для заказов в
-   `CANCEL_PENDING` и переводит их в `CANCELLED` после успешного возврата
-   резерва.
+   `CANCEL_PENDING` и переводит их в `CANCELLED` после успешного ответа B2B.
 
 ### Edge cases
 
 - **Без `Authorization`** → `401 UNAUTHORIZED`.
-- **`order_id` не существует или принадлежит другому покупателю** → `404
-  NOT_FOUND` (`other_user_order_returns_404`).
-- **Заказ в `ASSEMBLING` (или любом статусе кроме `CREATED`/`PAID`)** → `409
-  CANCEL_NOT_ALLOWED` с текущим статусом в сообщении
-  (`cancel_assembling_order_returns_409`).
-- **Unreserve в B2B падает** (БД каталога недоступна) → заказ переходит в
-  `CANCEL_PENDING`, `200 OK` (`unreserve_failure_transitions_to_cancel_pending`).
-- **Happy path** (`CREATED`/`PAID` → unreserve OK) → `200 OK`, статус
-  `CANCELLED` (`cancel_paid_order_transitions_to_cancelled`).
+- **Чужой заказ / несуществующий** → `404 NOT_FOUND`.
+- **Статус `DELIVERED` (или иной не из допустимых)** → `409 CANCEL_NOT_ALLOWED`
+  (`test_cancel_delivered_order_returns_409`).
+- **B2B недоступен** → `CANCEL_PENDING`, `200 OK`
+  (`test_unreserve_failure_transitions_to_cancel_pending`).
+- **Happy path** → `200 OK`, статус `CANCELLED`
+  (`test_cancel_paid_order_transitions_to_cancelled`).
 
 ### Сценарии (тесты)
 
-- `cancel_paid_order_transitions_to_cancelled`
-  (`test_cancel_paid_order_transitions_to_cancelled`) — happy path: заказ в
-  `PAID` → `200`, статус `CANCELLED`, `status_history` содержит переход
-  `PAID → CANCELLED`.
-- `unreserve_failure_transitions_to_cancel_pending`
-  (`test_unreserve_failure_transitions_to_cancel_pending`) — unreserve падает
-  с `SQLAlchemyError` → `200`, статус `CANCEL_PENDING`, `status_history`
-  содержит переход `PAID → CANCEL_PENDING`.
-- `cancel_assembling_order_returns_409`
-  (`test_cancel_assembling_order_returns_409`) — заказ в `ASSEMBLING` → `409
-  CANCEL_NOT_ALLOWED`.
-- `other_user_order_returns_404` (`test_other_user_order_returns_404`) —
-  IDOR: запрос от имени другого покупателя → `404 NOT_FOUND` (не `403`).
-- `test_cancel_order_not_authorized_returns_401` — без `Authorization` →
-  `401`.
+- `test_cancel_paid_order_transitions_to_cancelled` — happy path.
+- `test_unreserve_failure_transitions_to_cancel_pending` — B2B недоступен →
+  `CANCEL_PENDING`.
+- `test_cancel_assembling_order_transitions_to_cancelled` — заказ в
+  `ASSEMBLING` допустим для отмены → `200 CANCELLED`.
+- `test_cancel_delivered_order_returns_409` — заказ в `DELIVERED` → `409`.
+- `test_other_user_order_returns_404` — IDOR: чужой заказ → `404`.
+- `test_cancel_order_not_authorized_returns_401` — без токена → `401`.
 
 ### ADR — асинхронный retry unreserve для `CANCEL_PENDING`
 
-Рассмотрены три варианта реализации фонового ретрая unreserve для заказов в
-`CANCEL_PENDING`:
+Рассмотрены: (1) Celery + exponential backoff, (2) management command по
+cron, (3) Django Q. **Выбран вариант 2** (cron).
 
-1. **Celery task с exponential backoff** — отдельный воркер (Celery +
-   broker, напр. Redis/RabbitMQ), задача `retry_unreserve(order_id)`
-   ставится в очередь при падении unreserve и повторяется с растущим
-   интервалом до успеха.
-2. **Management command по cron** — периодический скрипт
-   (`manage.py retry_pending_cancellations`), запускаемый внешним
-   cron/systemd-timer, выбирает все заказы `CANCEL_PENDING` и повторяет
-   unreserve для каждого.
-3. **Django Q / встроенная очередь задач на той же БД** — задачи хранятся в
-   таблице той же БД (без внешнего broker), воркер-процесс читает их и
-   выполняет.
+Критерии: (а) сложность настройки — cron не требует broker'а/воркера; (б)
+гарантия при перезапуске — cron каждый тик читает `status = CANCEL_PENDING`
+из БД, задачи не теряются при падении. Celery даёт finer backoff, но
+требует Redis/RabbitMQ; Django Q — не под этот стек (FastAPI, не Django).
 
-Критерии: (а) сложность настройки окружения (нужен ли отдельный
-broker/воркер) и (б) гарантия выполнения при перезапуске сервиса (не теряются
-ли заказы `CANCEL_PENDING`, если воркер/брокер падает между постановкой задачи
-и её выполнением).
-
-**Выбран вариант 2** (management command по cron). По критерию (а) он не
-требует ни broker'а, ни отдельного воркер-процесса — только периодический
-запуск уже существующего Python-окружения сервиса, что для текущей сборки
-(без Redis/RabbitMQ в инфраструктуре) минимизирует новые зависимости. По
-критерию (б) он по конструкции устойчив к перезапускам: ретрай не зависит от
-"задачи в очереди", которая могла быть потеряна при падении broker'а — на
-каждом тике cron просто читает текущее состояние БД (`status =
-CANCEL_PENDING`) и пытается продвинуть **все** такие заказы, то есть состояние
-полностью восстанавливается из БД, а не из очереди.
-
-Вариант 1 (Celery) дал бы более точный контроль над backoff
-(экспоненциальные интервалы на уровне отдельной задачи, а не фиксированный тик
-cron), но требует поднятия brokera и воркера — для сценария "редкие падения
-unreserve, объём заказов в `CANCEL_PENDING` невелик" это избыточная
-инфраструктурная сложность. Он также хуже по критерию (б) без дополнительной
-настройки: задача Celery, поставленная в очередь и не подтверждённая до
-перезапуска broker'а, может быть потеряна, если не настроены persistence и
-acks_late отдельно.
-
-Вариант 3 (Django Q) занимает промежуточное положение — задачи переживают
-перезапуск (хранятся в БД), но фреймворк специфичен для Django и добавляет
-зависимость, не используемую остальным сервисом (FastAPI/SQLAlchemy здесь, не
-Django ORM), что усложняет интеграцию без выигрыша по сравнению с вариантом 2.
-
-На первой итерации (этот PR) реализован только переход в `CANCEL_PENDING` с
-логированием ошибки unreserve — без фактического retry-воркера/cron-команды
-(scaffold). Ретрай — отдельная задача.
-
-## B2C-12. Реакция на события товаров от B2B {#b2c-12-handle-events}
-
-### Контекст
-
-Продавец (через B2B) может заблокировать, удалить или вывести из остатка товар,
-который уже лежит в корзинах покупателей. Покупатель должен увидеть это при
-следующем открытии корзины — но **заказы не трогаем**: если заказ уже оплачен
-(`PAID`/`ASSEMBLING`/...), продавец принял обязательство и обязан отгрузить по
-зафиксированным в `OrderItem` цене и составу (см. [B2C-9](#b2c-9-checkout)).
-Событие касается только `cart.items`.
-
-### `POST /api/v1/events/product`
-
-Эндпоинт вызывается B2B (через service-to-service вызов, аналогично
-`POST /api/v1/events/moderation` на стороне B2B) с заголовком `X-Service-Key`.
-Без него или с неверным ключом — `401 UNAUTHORIZED`.
-
-Тело запроса — конверт, который уже используется outbox-событиями B2B
-(`crud/outbox.py`, см. `services/b2b`):
-
-```json
-{
-  "event_type": "PRODUCT_BLOCKED" | "PRODUCT_DELETED" | "SKU_OUT_OF_STOCK",
-  "idempotency_key": "uuid",
-  "occurred_at": "2026-06-15T00:00:00Z",
-  "payload": {
-    "product_id": "uuid",
-    "sku_ids": ["uuid", ...],
-    "hard_block": false
-  }
-}
-```
-
-Для `SKU_OUT_OF_STOCK` `payload` может содержать одиночный `sku_id` вместо
-`sku_ids` (формат `b2c.sku.out_of_stock` в B2B) — сервис принимает обе формы.
-
-### Алгоритм
-
-1. **Идемпотентность**: `idempotency_key` события проверяется через
-   advisory-lock + таблицу `cart.product_events_processed`. Если ключ уже
-   обработан — `200 {"processed": false, "updated_count": 0}`, без побочных
-   эффектов (повтор после таймаута retry от B2B не должен ничего менять
-   дважды).
-2. **Обновление корзин**: по всем `sku_ids` из `payload` выполняется один
-   batch `UPDATE cart.items SET unavailable_reason = ... WHERE sku_id IN (...)`
-   — один запрос вместо N отдельных `UPDATE` по каждому SKU.
-   `unavailable_reason` определяется типом события:
-   - `PRODUCT_BLOCKED` → `PRODUCT_BLOCKED`;
-   - `PRODUCT_DELETED` → `PRODUCT_DELETED`;
-   - `SKU_OUT_OF_STOCK` → `OUT_OF_STOCK`.
-3. Ключ идемпотентности записывается в `cart.product_events_processed`, ответ
-   — `200 {"processed": true, "updated_count": N}`.
-
-### Заказы не трогаются
-
-Запрос не касается `orders.orders`/`orders.order_items` — у `OrderItem` нет
-`sku_id`-индекса, обновляемого этим обработчиком, и сервис не выполняет
-никаких запросов к таблицам заказов. Зафиксированные на момент checkout
-`unit_price`/`line_total`/`product_title`/`sku_name` остаются неизменными для
-уже оформленных заказов с тем же `sku_id`.
-
-### Сценарии (тесты)
-
-- `product_blocked_marks_cart_items_unavailable` — `PRODUCT_BLOCKED` со
-  списком `sku_ids` → все `cart.items` с этими `sku_id` получают
-  `unavailable_reason = "PRODUCT_BLOCKED"`.
-- `orders_not_affected_by_product_blocked` — `OrderItem` с теми же `sku_id`
-  не меняются (`unit_price`/`line_total` прежние).
-- `idempotent_event_no_side_effects` — повтор того же `idempotency_key` →
-  `200 {"processed": false, "updated_count": 0}`, `cart.items` не меняются
-  повторно.
-- `missing_service_key_returns_401` — запрос без `X-Service-Key` → `401
-  UNAUTHORIZED`.
-
-### ADR — хранение идемпотентности входящих событий о товарах
-
-Рассмотрены три варианта хранения ключей идемпотентности для
-`POST /api/v1/events/product`:
-
-1. **Отдельная таблица `cart.product_events_processed`** (`idempotency_key`
-   PK, `event_type`, `processed_at`) — выбрано.
-2. **Поле в `cart_items`** (например, `last_event_idempotency_key` на каждой
-   позиции корзины).
-3. **Redis** (`SET idempotency_key 1 NX EX <ttl>`).
-
-Критерии: (а) риск утечки памяти/диска при большом потоке событий и (б)
-сложность очистки старых ключей.
-
-Выбран вариант 1 — он уже используется на стороне B2B
-(`ModerationProcessedEvent` в `services/b2b/database/models/moderation_event.py`),
-что даёт единообразие. Таблица растёт линейно с количеством входящих событий,
-но строки маленькие (UUID + строка + timestamp), и `processed_at` даёт простой
-критерий очистки: `DELETE FROM cart.product_events_processed WHERE processed_at
-< now() - interval '30 days'` — события одноразовые, хранить их дольше окна
-повторных попыток B2B не нужно.
-
-Вариант 2 (поле в `cart_items`) был бы неверным семантически: один и тот же
-`sku_id` может встречаться в нескольких `cart_items` (у разных покупателей), а
-идемпотентность определена на уровне *события*, а не позиции корзины —
-пришлось бы записывать один и тот же `idempotency_key` в N строк, что не
-помогает обнаружить дубликат, если на момент повтора корзины уже изменились
-(товар убрали из корзины между двумя попытками B2B).
-
-Вариант 3 (Redis) добавил бы внешнюю зависимость ради TTL, который у нас и так
-реализуется простым `DELETE` по `processed_at` без отдельного процесса; кроме
-того, при потере данных в Redis (если не настроена персистентность) дубликат
-события привёл бы к повторному (хоть и идемпотентному по результату — `UPDATE
-... SET unavailable_reason = ...` — повторное применение безопасно) проходу по
-`cart.items`, что не критично, но не даёт выигрыша по сравнению с таблицей в
-основной БД, которая уже есть и транзакционно согласована с обновлением
-`cart.items`.
-
-## B2C-13. Финальное списание резерва при доставке (fulfill) {#b2c-13-fulfill}
-
-### Контекст
-
-Когда заказ доставлен покупателю, товар физически выбыл со склада навсегда —
-в отличие от отмены ([B2C-11](#b2c-11-cancel-order)), где товар остаётся на
-складе и `active_quantity` восстанавливается, здесь нужно только **списать**
-`reserved_quantity`, выставленный при резерве на checkout
-([B2C-9, шаг 6](#b2c-9-checkout)). Без этого списания `reserved_quantity`
-бесконечно растёт с каждым доставленным заказом: продавец в B2B видит
-заниженный доступный остаток (`active_quantity`, который не меняется этим
-шагом) и завышенный "висящий" резерв, что мешает ему размещать новые позиции.
-
-Как и в [B2C-11](#b2c-11-cancel-order) и [B2C-9, "B2B недоступен"](#b2b-недоступен),
-"B2B"-каталог в этой сборке — таблицы `catalog.products`/`catalog.skus` в той
-же БД. `fulfill` — это списание `reserved_quantity` по строкам `Sku`,
-соответствующим `OrderItem` заказа.
-
-Откатывать `DELIVERED` нельзя: если `fulfill` падает, заказ остаётся
-`DELIVERED`, а списание резерва повторяется асинхронным ретраем — в отличие
-от unreserve при отмене, здесь "откат" в принципе не имеет смысла (товар уже
-у покупателя).
-
-### Триггер перехода в `DELIVERED`
-
-`POST /api/v1/events/order-delivered` — service-to-service эндпоинт (по
-аналогии с `POST /api/v1/events/product`, [B2C-12](#b2c-12-handle-events)),
-защищён заголовком `X-Service-Key`. Вызывается службой
-доставки/логистики, когда заказ физически передан покупателю. Тело —
-`{"order_id": "<uuid>"}`.
-
-См. ADR ниже — почему выбран отдельный service-to-service эндпоинт, а не
-Django Admin action или `post_save`-сигнал на модели.
-
-### Алгоритм (`POST /api/v1/events/order-delivered`)
-
-1. Найти заказ по `order_id` (`order_crud.get_order_by_id`, без привязки к
-   `buyer_id` — это service-to-service вызов, а не запрос покупателя). Если
-   не найден — `404 NOT_FOUND`.
-2. Если `order.status == CANCELLED` — `409 DELIVER_NOT_ALLOWED` (доставка
-   отменённого заказа невозможна).
-3. Если `order.status != DELIVERED` — записать
-   `OrderStatusHistory(status=DELIVERED)`, `order.status = DELIVERED`,
-   зафиксировать транзакцию. Если заказ уже был `DELIVERED` (повторный вызов
-   события) — шаг пропускается, статус не меняется повторно.
-4. **Идемпотентность fulfill**: если `order.fulfilled_at` уже заполнен —
-   `fulfill` не выполняется повторно, ответ `200` с текущим `OrderResponse`
-   без изменений (`repeated_fulfill_idempotent`).
-5. **Fulfill в B2B**: для каждого `OrderItem` заблокировать соответствующий
-   `Sku` (`SELECT ... FOR UPDATE`, как в unreserve) и применить
-   `reserved_quantity = max(0, reserved_quantity - quantity)`.
-   `active_quantity` не меняется. Установить `order.fulfilled_at = now()`,
-   зафиксировать транзакцию.
-6. **Исход A — fulfill OK**: `200` с `OrderResponse` (`status = DELIVERED`,
-   `fulfilled_at` заполнен).
-7. **Исход B — fulfill упал** (`SQLAlchemyError` при обращении к
-   `catalog.skus`, по аналогии с [B2C-9, "B2B недоступен"](#b2b-недоступен)):
-   - Транзакция fulfill откатывается, `order.fulfilled_at` остаётся `NULL`.
-   - Переход в `DELIVERED` на шаге 3 **не откатывается** — заказ остаётся
-     `DELIVERED` (товар уже у покупателя, откат статуса не имеет смысла).
-   - Ошибка логируется (`logger.exception`) для последующего ретрая.
-   - Вернуть `200` с `OrderResponse` (`status = DELIVERED`,
-     `fulfilled_at = null`) — служба доставки не должна повторять весь вызов
-     события в цикле; списание резерва — внутренняя задача B2C.
-8. Асинхронный retry (вне HTTP-запроса, аналогично ретраю
-   `CANCEL_PENDING` в [B2C-11](#b2c-11-cancel-order)) выбирает все заказы
-   `status = DELIVERED AND fulfilled_at IS NULL` и повторяет fulfill для
-   каждого.
-
-### Edge cases
-
-- **`order_id` не существует** → `404 NOT_FOUND`.
-- **Заказ `CANCELLED`** → `409 DELIVER_NOT_ALLOWED`.
-- **Повторный вызов события для уже фулфилленного заказа** →  `200`, без
-  повторного списания `reserved_quantity` (`repeated_fulfill_idempotent`).
-- **Списание резерва падает** → заказ остаётся `DELIVERED`,
-  `fulfilled_at = null`, ошибка залогирована, ретрай — асинхронный
-  (`fulfill_failure_retried_asynchronously`).
-- **Заказ ещё не в `DELIVERED`** (`PAID`/`ASSEMBLING`/`DELIVERING`) →
-  переход в `DELIVERED` + fulfill в одном вызове
-  (`delivered_status_triggers_fulfill_to_b2b`).
-
-### Сценарии (тесты)
-
-- `delivered_status_triggers_fulfill_to_b2b`
-  (`test_delivered_status_triggers_fulfill_to_b2b`) — happy path: заказ в
-  `PAID`/`DELIVERING` → `POST /events/order-delivered` → `200`, статус
-  `DELIVERED`, `reserved_quantity` каждого SKU из `OrderItem` уменьшен на
-  `quantity`, `fulfilled_at` заполнен.
-- `fulfill_failure_retried_asynchronously`
-  (`test_fulfill_failure_retried_asynchronously`) — списание резерва падает
-  с `SQLAlchemyError` → `200`, статус `DELIVERED`, `fulfilled_at = null`,
-  ошибка залогирована; последующий ретрай (`retry_pending_fulfillments`)
-  успешно списывает резерв и заполняет `fulfilled_at`.
-- `repeated_fulfill_idempotent`
-  (`test_repeated_fulfill_idempotent`) — повторный вызов с тем же
-  `order_id` после успешного fulfill → `200`, `reserved_quantity` не меняется
-  повторно (мок B2B не вызывается повторно).
-
-### ADR — триггер перехода в `DELIVERED` и вызова fulfill
-
-Рассмотрены три варианта реализации триггера:
-
-1. **Django Admin action** — оператор склада вручную помечает заказ
-   "доставлен" через админку, action вызывает `fulfill`.
-2. **`post_save`-сигнал на модели `Order`** — при любом сохранении `Order` с
-   `status = DELIVERED` сигнал вызывает `fulfill`.
-3. **Отдельный service-to-service эндпоинт** (`POST
-   /api/v1/events/order-delivered`, защищён `X-Service-Key`, по аналогии с
-   `POST /api/v1/events/product` из [B2C-12](#b2c-12-handle-events)) —
-   выбрано.
-
-Критерии: (а) риск случайного двойного вызова `fulfill` и (б) возможность
-тестирования без поднятия Django Admin.
-
-**Выбран вариант 3**. По критерию (а) риск двойного вызова одинаков для всех
-трёх вариантов и закрывается одинаково — идемпотентность через
-`order.fulfilled_at` (шаг 4 алгоритма), а не выбором триггера; но вариант 3
-явный: один HTTP-вызов = одна попытка `fulfill`, тогда как `post_save`-сигнал
-(вариант 2) срабатывает на **любое** сохранение `Order` с `status =
-DELIVERED`, включая повторные `db.add(order)`/`flush()` в той же транзакции
-или несвязанные обновления полей того же заказа — это увеличивает поверхность
-случайных повторных вызовов, которые затем приходится гасить тем же
-`fulfilled_at`. По критерию (б) вариант 3 тестируется напрямую через
-`AsyncClient.post(...)` с `X-Service-Key`, как уже сделано для
-`/events/product` — без зависимости от Django Admin, которого в этой сборке
-(FastAPI/SQLAlchemy) нет вовсе, что делает вариант 1 неприменимым без
-отдельной админ-панели.
-
-Вариант 2 (`post_save`-сигнал) был бы органичен для Django ORM
-(`@receiver(post_save, sender=Order)`), но в SQLAlchemy его аналог — ORM
-event listener (`@event.listens_for(Order, "after_update")`) — выполняется
-синхронно внутри `flush()`, что усложняет вызов async I/O (`fulfill`
-обращается к БД через `AsyncSession`) и тестирование в изоляции от остального
-кода, сохраняющего `Order`.
-
-На первой итерации (этот PR) `fulfill` выполняется синхронно внутри
-обработчика события (fire-and-forget с логом ошибки при падении, без
-отдельного retry-воркера/cron) — `retry_pending_fulfillments` реализована как
-функция-сервис, готовая к вызову из периодической задачи; подключение к
-cron/scheduler — отдельная задача, аналогично нерешённому пункту
-`retry_pending_cancellations` из [B2C-11](#b2c-11-cancel-order).
+На первой итерации реализован только переход в `CANCEL_PENDING` с
+логированием — без retry-воркера (scaffold).

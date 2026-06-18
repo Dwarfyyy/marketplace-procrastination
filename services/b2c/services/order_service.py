@@ -17,6 +17,7 @@ from database.models.catalog.base import ProductStatusEnum
 from database.models.orders.order import OrderStatusEnum
 from exceptions.order import (
 	AddressNotFoundError,
+	B2BUnavailableError,
 	EmptyCartError,
 	IdempotencyConflictError,
 	InvalidIdempotencyKeyError,
@@ -222,6 +223,13 @@ async def checkout(
 		return schemas_builder.build_order_response(existing2)
 
 
+_CANCELLABLE_STATUSES = {
+	OrderStatusEnum.CREATED,
+	OrderStatusEnum.PAID,
+	OrderStatusEnum.ASSEMBLING,
+}
+
+
 async def cancel_order(
 	db: AsyncSession,
 	order_id: uuid.UUID,
@@ -232,12 +240,21 @@ async def cancel_order(
 	if order is None:
 		raise OrderNotFoundError()
 
-	if order.status not in [OrderStatusEnum.CREATED, OrderStatusEnum.PAID]:
+	if order.status not in _CANCELLABLE_STATUSES:
 		raise OrderNotCancelableError()
 
+	items_for_b2b = [
+		{"sku_id": str(item.sku_id), "quantity": item.quantity}
+		for item in order.items
+	]
 	try:
-		await order_crud.unreserve_order_items(db, order)
-	except SQLAlchemyError:
+		await b2b_client.unreserve_inventory(
+			order_id=order.id,
+			items=items_for_b2b,
+			b2b_base_url=settings.B2B_BASE_URL,
+			service_key=settings.B2B_SERVICE_KEY,
+		)
+	except B2BUnavailableError:
 		logger.exception(
 			"Unreserve failed for order %s, marking CANCEL_PENDING", order_id
 		)
@@ -251,7 +268,6 @@ async def cancel_order(
 
 	await order_crud.change_order_status(db, order.id, OrderStatusEnum.CANCELLED, reason)
 	order_updated = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
-
 	return schemas_builder.build_order_response(order_updated)
 
 
