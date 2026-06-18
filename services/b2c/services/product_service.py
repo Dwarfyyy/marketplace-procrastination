@@ -85,11 +85,10 @@ async def get_products_list(
 	if search:
 		search_stripped = search.strip()
 
-		if 0 < len(search_stripped) < 4:
-			raise ValueError("Search query must be at least 4 characters")
-
-		if len(search_stripped) > 255:
-			raise ValueError("Search query must be at most 255 characters")
+		# Per b2c/openapi.yaml the search query has no minimum length and a
+		# maximum length of 200 characters.
+		if len(search_stripped) > 200:
+			raise ValueError("Search query must be at most 200 characters")
 
 	cat_uuid = uuid.UUID(category_id) if category_id else None
 	filter = json.loads(filters_json) if filters_json else {}

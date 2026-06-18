@@ -203,6 +203,46 @@ async def category_with_products(
 
 
 @dataclass(frozen=True, slots=True)
+class OtherCategoryWithProductData:
+	category: Category
+	product: Product
+
+
+@pytest.fixture()
+async def other_category_with_product(
+	db_session: AsyncSession,
+) -> OtherCategoryWithProductData:
+	"""A second category with its own visible, in-stock product.
+
+	Used alongside ``category_with_products`` to assert that filtering by
+	``category_id`` isolates results to the requested category.
+	"""
+	category = CategoryFactory.build(
+		id=_fixed_uuid(),
+		name="Other Category",
+		slug="other-category",
+	)
+	product = ProductFactory.build(
+		id=_fixed_uuid(),
+		category_id=category.id,
+		title="Other Product",
+		slug="other-product",
+		description="Other description",
+		status=ProductStatusEnum.MODERATED,
+	)
+	sku = Sku(
+		id=_fixed_uuid(),
+		product_id=product.id,
+		name="Other Sku",
+		price=100,
+		active_quantity=1,
+	)
+	db_session.add_all([category, product, sku])
+	await db_session.commit()
+	return OtherCategoryWithProductData(category=category, product=product)
+
+
+@dataclass(frozen=True, slots=True)
 class VisibilityProductsData:
 	category: Category
 	visible_product: Product
