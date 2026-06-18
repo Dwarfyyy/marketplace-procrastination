@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import clients.b2b_client as b2b_client
@@ -288,11 +288,20 @@ async def deliver_order(db: AsyncSession, order_id: uuid.UUID) -> OrderResponse:
 
 	if order.fulfilled_at is None:
 		now = datetime.now(timezone.utc)
+		items_for_b2b = [
+			{"sku_id": str(item.sku_id), "quantity": item.quantity}
+			for item in order.items
+		]
 		try:
-			await order_crud.fulfill_order_items(db, order, now)
+			await b2b_client.fulfill_inventory(
+				order_id=order.id,
+				items=items_for_b2b,
+				b2b_base_url=settings.B2B_BASE_URL,
+				service_key=settings.B2B_SERVICE_KEY,
+			)
+			await order_crud.mark_order_fulfilled(db, order, now)
 			await db.commit()
-		except SQLAlchemyError:
-			await db.rollback()
+		except B2BUnavailableError:
 			logger.exception(
 				"Fulfill failed for order %s, will retry asynchronously", order_id
 			)
@@ -306,12 +315,21 @@ async def retry_pending_fulfillments(db: AsyncSession) -> int:
 	now = datetime.now(timezone.utc)
 	fulfilled_count = 0
 	for order in orders:
+		items_for_b2b = [
+			{"sku_id": str(item.sku_id), "quantity": item.quantity}
+			for item in order.items
+		]
 		try:
-			await order_crud.fulfill_order_items(db, order, now)
+			await b2b_client.fulfill_inventory(
+				order_id=order.id,
+				items=items_for_b2b,
+				b2b_base_url=settings.B2B_BASE_URL,
+				service_key=settings.B2B_SERVICE_KEY,
+			)
+			await order_crud.mark_order_fulfilled(db, order, now)
 			await db.commit()
 			fulfilled_count += 1
-		except SQLAlchemyError:
-			await db.rollback()
+		except B2BUnavailableError:
 			logger.exception("Retry fulfill failed for order %s", order.id)
 	return fulfilled_count
 

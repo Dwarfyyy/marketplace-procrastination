@@ -170,35 +170,9 @@ async def create_order_with_items(
 	return order.id
 
 
-async def _lock_skus_for_order_items(
-	db: AsyncSession, order_items: list[OrderItem]
-) -> dict[uuid.UUID, Sku]:
-	sku_ids_sorted = sorted({item.sku_id for item in order_items}, key=str)
-	locked_result = await db.execute(
-		select(Sku).where(Sku.id.in_(sku_ids_sorted)).with_for_update()
-	)
-	return {sku.id: sku for sku in locked_result.scalars().all()}
-
-
-def _apply_fulfill(
-	locked_skus: dict[uuid.UUID, Sku], order_items: list[OrderItem]
-) -> None:
-	for item in order_items:
-		sku = locked_skus.get(item.sku_id)
-		if sku is None:
-			continue
-		sku.reserved_quantity = max(0, sku.reserved_quantity - item.quantity)
-
-
-async def fulfill_order_items(db: AsyncSession, order: Order, now: datetime) -> None:
-	transaction_ctx = db.begin_nested() if db.in_transaction() else db.begin()
-	async with transaction_ctx:
-		locked_skus = await _lock_skus_for_order_items(db, order.items)
-		_apply_fulfill(locked_skus, order.items)
-		for sku in locked_skus.values():
-			db.add(sku)
-		order.fulfilled_at = now
-		db.add(order)
+async def mark_order_fulfilled(db: AsyncSession, order: Order, now: datetime) -> None:
+	order.fulfilled_at = now
+	db.add(order)
 
 
 async def get_orders_pending_fulfillment(db: AsyncSession) -> list[Order]:
