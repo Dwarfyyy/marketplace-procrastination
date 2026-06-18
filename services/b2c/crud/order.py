@@ -263,7 +263,7 @@ async def _lock_skus_for_order_items(
 	return {sku.id: sku for sku in locked_result.scalars().all()}
 
 
-def _apply_unreserve(
+def _apply_fulfill(
 	locked_skus: dict[uuid.UUID, Sku], order_items: list[OrderItem]
 ) -> None:
 	for item in order_items:
@@ -271,16 +271,29 @@ def _apply_unreserve(
 		if sku is None:
 			continue
 		sku.reserved_quantity = max(0, sku.reserved_quantity - item.quantity)
-		sku.active_quantity += item.quantity
 
 
-async def unreserve_order_items(db: AsyncSession, order: Order) -> None:
+async def fulfill_order_items(db: AsyncSession, order: Order, now: datetime) -> None:
 	transaction_ctx = db.begin_nested() if db.in_transaction() else db.begin()
 	async with transaction_ctx:
 		locked_skus = await _lock_skus_for_order_items(db, order.items)
-		_apply_unreserve(locked_skus, order.items)
+		_apply_fulfill(locked_skus, order.items)
 		for sku in locked_skus.values():
 			db.add(sku)
+		order.fulfilled_at = now
+		db.add(order)
+
+
+async def get_orders_pending_fulfillment(db: AsyncSession) -> list[Order]:
+	result: Result = await db.execute(
+		select(Order)
+		.where(
+			Order.status == OrderStatusEnum.DELIVERED,
+			Order.fulfilled_at.is_(None),
+		)
+		.options(selectinload(Order.items))
+	)
+	return list(result.scalars().all())
 
 
 async def get_buyer_orders(

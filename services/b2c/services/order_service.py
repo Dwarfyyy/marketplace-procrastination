@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import crud.address as address_crud
@@ -18,6 +18,7 @@ from exceptions.order import (
 	EmptyCartError,
 	IdempotencyConflictError,
 	InvalidIdempotencyKeyError,
+	B2BUnavailableError,
 	OrderNotCancelableError,
 	OrderNotFoundError,
 	PaymentMethodNotFoundError,
@@ -216,12 +217,26 @@ async def cancel_order(
 	if order is None:
 		raise OrderNotFoundError()
 
-	if order.status not in [OrderStatusEnum.CREATED, OrderStatusEnum.PAID]:
+	_CANCELLABLE = {
+		OrderStatusEnum.CREATED,
+		OrderStatusEnum.PAID,
+		OrderStatusEnum.ASSEMBLING,
+	}
+	if order.status not in _CANCELLABLE:
 		raise OrderNotCancelableError()
 
+	items_for_b2b = [
+		{"sku_id": str(item.sku_id), "quantity": item.quantity}
+		for item in order.items
+	]
 	try:
-		await order_crud.unreserve_order_items(db, order)
-	except SQLAlchemyError:
+		await b2b_client.unreserve_inventory(
+			order_id=order.id,
+			items=items_for_b2b,
+			b2b_base_url=settings.B2B_BASE_URL,
+			service_key=settings.B2B_SERVICE_KEY,
+		)
+	except B2BUnavailableError:
 		logger.exception(
 			"Unreserve failed for order %s, marking CANCEL_PENDING", order_id
 		)
