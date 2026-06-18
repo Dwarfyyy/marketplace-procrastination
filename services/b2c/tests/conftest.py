@@ -117,7 +117,6 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 		allow_headers=["*"],
 	)
 	test_app.include_router(product.router)
-	test_app.include_router(product.catalog_products_router)
 	test_app.include_router(breadcrumbs.router)
 	test_app.include_router(cart.router)
 	test_app.include_router(events.router)
