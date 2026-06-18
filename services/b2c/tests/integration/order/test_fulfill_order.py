@@ -3,11 +3,11 @@ import uuid
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models.catalog.variants import Sku
 from database.models.orders.order import Order, OrderStatusEnum
+from exceptions.order import B2BUnavailableError
 from services import order_service
 from tests.integration.events.conftest import PRODUCT_EVENT_SERVICE_KEY_HEADERS
 from tests.integration.order.conftest import OrderData
@@ -36,7 +36,6 @@ async def test_delivered_status_triggers_fulfill_to_b2b(
 	delivering_order_data: OrderData,
 ) -> None:
 	order = delivering_order_data.order
-	sku_ids = [sku.id for sku in delivering_order_data.skus]
 
 	response = await _post_delivered(client, order.id)
 	assert response.status_code == 200
@@ -44,10 +43,6 @@ async def test_delivered_status_triggers_fulfill_to_b2b(
 	assert body["id"] == str(order.id)
 	assert body["status"] == "DELIVERED"
 	assert body["status_history"][-1]["status"] == "DELIVERED"
-
-	reserved = await _reserved_quantities(db_session, sku_ids)
-	for sku_id in sku_ids:
-		assert reserved[sku_id] == 0
 
 	await db_session.refresh(order)
 	assert order.fulfilled_at is not None
@@ -64,10 +59,10 @@ async def test_fulfill_failure_retried_asynchronously(
 	sku_ids = [sku.id for sku in delivering_order_data.skus]
 
 	async def _raise_unavailable(*args, **kwargs):
-		raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+		raise B2BUnavailableError()
 
 	monkeypatch.setattr(
-		"services.order_service.order_crud.fulfill_order_items",
+		"services.order_service.b2b_client.fulfill_inventory",
 		_raise_unavailable,
 	)
 
@@ -92,9 +87,9 @@ async def test_fulfill_failure_retried_asynchronously(
 	fulfilled_count = await order_service.retry_pending_fulfillments(db_session)
 	assert fulfilled_count == 1
 
-	reserved_after_retry = await _reserved_quantities(db_session, sku_ids)
-	for sku_id in sku_ids:
-		assert reserved_after_retry[sku_id] == 0
+	result = await db_session.execute(select(Order).where(Order.id == order.id))
+	retried = result.scalar_one()
+	assert retried.fulfilled_at is not None
 
 
 async def test_repeated_fulfill_idempotent(
@@ -103,22 +98,21 @@ async def test_repeated_fulfill_idempotent(
 	delivering_order_data: OrderData,
 ) -> None:
 	order = delivering_order_data.order
-	sku_ids = [sku.id for sku in delivering_order_data.skus]
 
 	first = await _post_delivered(client, order.id)
 	assert first.status_code == 200
 
-	reserved_after_first = await _reserved_quantities(db_session, sku_ids)
-	for sku_id in sku_ids:
-		assert reserved_after_first[sku_id] == 0
+	await db_session.refresh(order)
+	fulfilled_at_first = order.fulfilled_at
+	assert fulfilled_at_first is not None
 
 	second = await _post_delivered(client, order.id)
 	assert second.status_code == 200
 	body = second.json()
 	assert body["status"] == "DELIVERED"
 
-	reserved_after_second = await _reserved_quantities(db_session, sku_ids)
-	assert reserved_after_second == reserved_after_first
+	await db_session.refresh(order)
+	assert order.fulfilled_at == fulfilled_at_first
 
 
 async def test_order_delivered_event_missing_service_key_returns_401(

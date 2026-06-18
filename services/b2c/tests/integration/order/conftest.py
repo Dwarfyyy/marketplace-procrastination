@@ -26,6 +26,14 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+@pytest.fixture(autouse=True)
+def mock_b2b_fulfill(monkeypatch: pytest.MonkeyPatch) -> None:
+	async def _noop(*args, **kwargs) -> None:
+		pass
+
+	monkeypatch.setattr("services.order_service.b2b_client.fulfill_inventory", _noop)
+
+
 @dataclass(frozen=True, slots=True)
 class OrderData:
 	order: Order
