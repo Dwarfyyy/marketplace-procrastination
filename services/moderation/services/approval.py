@@ -16,18 +16,18 @@ def _has_skus(card: ProductModeration) -> bool:
 
 async def approve_product(
 	db: AsyncSession,
-	product_id: UUID,
+	ticket_id: UUID,
 	moderator_id: UUID,
-	moderator_comment: str | None,
-) -> None:
+	comment: str | None,
+) -> ProductModeration:
 	result = await db.execute(
 		select(ProductModeration)
-		.where(ProductModeration.product_id == product_id)
+		.where(ProductModeration.id == ticket_id)
 		.with_for_update()
 	)
 	card = result.scalar_one_or_none()
 	if card is None:
-		raise error(404, "NOT_FOUND", "Product not found in moderation queue")
+		raise error(404, "NOT_FOUND", "Ticket not found in moderation queue")
 	ensure_not_terminal(card)
 	if card.status != ModerationStatus.IN_REVIEW:
 		raise error(409, "CONFLICT", "Product is not in review status")
@@ -40,7 +40,7 @@ async def approve_product(
 	idempotency_key = uuid.uuid4()
 	card.status = ModerationStatus.MODERATED
 	card.date_moderation = now
-	card.moderator_comment = moderator_comment
+	card.moderator_comment = comment
 	card.blocking_reason_id = None
 	card.field_reports = []
 	db.add(
@@ -49,7 +49,7 @@ async def approve_product(
 			event_type="MODERATED",
 			payload={
 				"idempotency_key": str(idempotency_key),
-				"product_id": str(product_id),
+				"product_id": str(card.product_id),
 				"event_type": "MODERATED",
 				"hard_block": False,
 				"field_reports": [],
@@ -58,3 +58,4 @@ async def approve_product(
 		)
 	)
 	await db.commit()
+	return card
