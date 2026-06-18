@@ -2,19 +2,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-	DATABASE_URL: str
-	DEBUG: bool = False
-	DATABASE_VERBOSE: bool = False
+	DATABASE_URL: str = "sqlite+aiosqlite:///./moderation.db"
+	B2B_URL: str = "http://b2b:8000"
+	MOD_TO_B2B_KEY: str = ""
+	OUTBOX_WORKER_ENABLED: bool = True
+	OUTBOX_POLL_INTERVAL_SECONDS: float = 1.0
 
-	# Service-to-service key expected from B2B on POST /api/v1/events/product
-	B2B_SERVICE_KEY: str = ""
-
-	model_config = SettingsConfigDict(
-		env_file=".env",
-		env_file_encoding="utf-8",
-		extra="allow",
-		case_sensitive=False,
-	)
+	model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()
