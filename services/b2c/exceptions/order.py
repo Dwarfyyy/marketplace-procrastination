@@ -56,3 +56,9 @@ class OrderNotDeliverableError(OrderError):
 	"""Order can't transition to DELIVERED (already cancelled)"""
 
 	pass
+
+
+class B2BUnavailableError(OrderError):
+	"""B2B inventory service is unavailable"""
+
+	pass

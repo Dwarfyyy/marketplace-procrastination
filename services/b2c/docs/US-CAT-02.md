@@ -32,7 +32,8 @@ make test
 
 - `tests/integration/test_catalog.py::test_search_title_returns_matching_products` — поиск по названию товара возвращает соответствующие результаты
 - `tests/integration/test_catalog.py::test_search_description_returns_matching_products` — поиск по описанию товара возвращает соответствующие результаты
-- `tests/integration/test_catalog.py::test_short_query_returns_400` — короткий поисковый запрос (< 4 символов) возвращает 400
+- `tests/integration/test_catalog.py::test_short_query_is_accepted` — короткий поисковый запрос принимается (openapi не задаёт минимальной длины), возвращает 200
+- `tests/integration/test_catalog.py::test_query_over_max_length_returns_400` — поисковый запрос длиннее 200 символов (maxLength по openapi) возвращает 400
 - `tests/integration/test_catalog.py::test_empty_results_returns_200` — пустой результат поиска возвращает 200 с пустым списком items
 - `tests/integration/test_catalog.py::test_special_chars_do_not_break_query` — специальные символы (`!@#$%^&*()`) в поисковом запросе не ломают SQL-запрос и возвращают корректный ответ
 

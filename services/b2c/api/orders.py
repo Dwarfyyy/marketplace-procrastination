@@ -3,13 +3,13 @@ import uuid
 
 import fastapi
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.security import HTTPBearer
 from core import db
 from database.models.orders.order import OrderStatusEnum
 from exceptions.order import (
 	AddressNotFoundError,
+	B2BUnavailableError,
 	EmptyCartError,
 	IdempotencyConflictError,
 	InvalidIdempotencyKeyError,
@@ -116,7 +116,7 @@ async def create_order(
 				"details": details,
 			},
 		) from err
-	except SQLAlchemyError as err:
+	except B2BUnavailableError as err:
 		raise fastapi.HTTPException(
 			status_code=503,
 			detail={"code": "B2B_UNAVAILABLE", "message": "Catalog service is unavailable"},

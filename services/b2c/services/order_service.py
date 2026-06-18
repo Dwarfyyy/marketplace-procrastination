@@ -7,10 +7,12 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import clients.b2b_client as b2b_client
 import crud.address as address_crud
 import crud.cart as cart_crud
 import crud.order as order_crud
 import crud.payment_method as payment_method_crud
+from core.config import settings
 from database.models.catalog.base import ProductStatusEnum
 from database.models.orders.order import OrderStatusEnum
 from exceptions.order import (
@@ -181,10 +183,24 @@ async def checkout(
 	if failed_items:
 		raise ReserveFailedError(failed_items)
 
+	new_order_id = uuid.uuid4()
+	items_for_b2b = [
+		{"sku_id": str(sku_id), "quantity": qty}
+		for sku_id, qty in requested_by_sku.items()
+	]
+	await b2b_client.reserve_inventory(
+		order_id=new_order_id,
+		idempotency_key=idempotency_key,
+		items=items_for_b2b,
+		b2b_base_url=settings.B2B_BASE_URL,
+		service_key=settings.B2B_SERVICE_KEY,
+	)
+
 	now = datetime.now(timezone.utc)
 	try:
-		order_id = await order_crud.reserve_and_create_order(
+		created_id = await order_crud.create_order_with_items(
 			db,
+			order_id=new_order_id,
 			buyer_id=buyer_id,
 			idempotency_key=idempotency_key,
 			request_hash=request_hash,
@@ -192,10 +208,9 @@ async def checkout(
 			payment_method_id=payment_method_id,
 			comment=comment,
 			now=now,
-			requested_by_sku=requested_by_sku,
 			enriched_items=enriched_items,
 		)
-		order = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
+		order = await order_crud.get_order_by_id_for_buyer(db, created_id, buyer_id)
 		return schemas_builder.build_order_response(order)
 
 	except IntegrityError:
