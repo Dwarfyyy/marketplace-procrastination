@@ -180,26 +180,6 @@ async def _lock_skus_for_order_items(
 	return {sku.id: sku for sku in locked_result.scalars().all()}
 
 
-def _apply_unreserve(
-	locked_skus: dict[uuid.UUID, Sku], order_items: list[OrderItem]
-) -> None:
-	for item in order_items:
-		sku = locked_skus.get(item.sku_id)
-		if sku is None:
-			continue
-		sku.reserved_quantity = max(0, sku.reserved_quantity - item.quantity)
-		sku.active_quantity += item.quantity
-
-
-async def unreserve_order_items(db: AsyncSession, order: Order) -> None:
-	transaction_ctx = db.begin_nested() if db.in_transaction() else db.begin()
-	async with transaction_ctx:
-		locked_skus = await _lock_skus_for_order_items(db, order.items)
-		_apply_unreserve(locked_skus, order.items)
-		for sku in locked_skus.values():
-			db.add(sku)
-
-
 def _apply_fulfill(
 	locked_skus: dict[uuid.UUID, Sku], order_items: list[OrderItem]
 ) -> None:
