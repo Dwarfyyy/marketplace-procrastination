@@ -5,7 +5,7 @@ from core.config import settings
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-PRODUCT_EVENTS_PATH = "/api/v1/events/product"
+PRODUCT_EVENTS_PATH = "/api/v1/b2b/events"
 ORDER_DELIVERED_EVENTS_PATH = "/api/v1/events/order-delivered"
 SERVICE_PATHS = {PRODUCT_EVENTS_PATH, ORDER_DELIVERED_EVENTS_PATH}
 

@@ -238,7 +238,7 @@ paths:
                 code: NOT_FOUND
                 message: "Order not found"
 
-  /events/product:
+  /b2b/events:
     post:
       summary: Событие об изменении товара от B2B
       description: >
@@ -363,7 +363,7 @@ paths:
         Откат в предыдущий статус не выполняется — товар уже у покупателя.
 
         Эндпоинт защищён заголовком `X-Service-Key`, как
-        `POST /api/v1/events/product`.
+        `POST /api/v1/b2b/events`.
       operationId: receiveOrderDeliveredEvent
       tags:
         - events

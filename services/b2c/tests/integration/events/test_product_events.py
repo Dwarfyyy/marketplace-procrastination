@@ -38,7 +38,7 @@ def _body(
 
 async def _post(client: AsyncClient, body: dict) -> object:
 	return await client.post(
-		"/api/v1/events/product",
+		"/api/v1/b2b/events",
 		headers=PRODUCT_EVENT_SERVICE_KEY_HEADERS,
 		json=body,
 	)
@@ -152,7 +152,7 @@ async def test_missing_service_key_returns_401(
 ) -> None:
 	sku_ids = [sku.id for sku in product_event_data.skus]
 	response = await client.post(
-		"/api/v1/events/product",
+		"/api/v1/b2b/events",
 		json=_body("PRODUCT_BLOCKED", sku_ids, product_event_data.product.id),
 	)
 

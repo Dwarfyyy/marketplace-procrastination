@@ -9,10 +9,10 @@ from schemas.order import OrderDeliveredEventRequest, OrderResponse
 from schemas.product_event import ProductEventRequest, ProductEventResponse
 from services import order_service, product_event_service
 
-router = APIRouter(prefix="/events", tags=["Product Events"])
+router = APIRouter(prefix="/api/v1", tags=["Events"])
 
 
-@router.post("/product", response_model=ProductEventResponse)
+@router.post("/b2b/events", response_model=ProductEventResponse)
 async def receive_product_event(
 	request: ProductEventRequest,
 	db: Annotated[AsyncSession, Depends(get_db)],
@@ -20,7 +20,7 @@ async def receive_product_event(
 	return await product_event_service.apply_product_event(db, request)
 
 
-@router.post("/order-delivered", response_model=OrderResponse)
+@router.post("/events/order-delivered", response_model=OrderResponse)
 async def receive_order_delivered_event(
 	request: OrderDeliveredEventRequest,
 	db: Annotated[AsyncSession, Depends(get_db)],
