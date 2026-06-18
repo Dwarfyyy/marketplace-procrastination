@@ -1,5 +1,5 @@
+import httpx
 from httpx import AsyncClient
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 import pytest
 from tests.integration.cart.conftest import auth_headers
@@ -152,10 +152,10 @@ async def test_b2b_unavailable_returns_503(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 	async def _raise_unavailable(*args, **kwargs):
-		raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+		raise httpx.ConnectError("Connection refused")
 
 	monkeypatch.setattr(
-		"services.order_service.order_crud.reserve_and_create_order",
+		"clients.b2b_client.reserve_inventory",
 		_raise_unavailable,
 	)
 
