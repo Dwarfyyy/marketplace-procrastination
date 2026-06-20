@@ -10,7 +10,8 @@ from database.models.card import ModerationCardStatus
 class ProductEventPayload(BaseModel):
 	product_id: uuid.UUID
 	seller_id: uuid.UUID
-	snapshot: dict[str, Any] = Field(default_factory=dict)
+	json_before: dict[str, Any] | None = None
+	json_after: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProductEventRequest(BaseModel):

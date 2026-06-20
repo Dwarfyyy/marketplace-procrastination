@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncGenerator, AsyncIterator
 
 import pytest
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import (
 from core import db as core_db
 from database.models import Base
 from main import app as moderation_app
+
+os.environ.setdefault("B2B_SERVICE_KEY", "test-b2b-service-key")
 
 
 @pytest.fixture()
@@ -33,6 +36,12 @@ def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 @pytest.fixture()
 async def db(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
+	async with session_factory() as session:
+		yield session
+
+
+@pytest.fixture()
+async def db_session(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
 	async with session_factory() as session:
 		yield session
 

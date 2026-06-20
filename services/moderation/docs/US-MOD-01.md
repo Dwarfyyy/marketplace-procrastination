@@ -5,21 +5,21 @@
 Реализован service-to-service endpoint:
 
 ```http
-POST /api/v1/events/product
+POST /api/v1/b2b/events
 X-Service-Key: <B2B_SERVICE_KEY>
 ```
 
 Принимает `idempotency_key` (генерируется B2B), `occurred_at`, `event_type`
 (`PRODUCT_CREATED` / `PRODUCT_EDITED` / `PRODUCT_DELETED`) и
-`payload.{product_id, seller_id, snapshot}`.
+`payload.{product_id, seller_id, json_before?, json_after}`.
 
 - `PRODUCT_CREATED` создаёт карточку `moderation.cards` в `PENDING` с
-  `json_after = snapshot`.
+  `json_after` из payload.
 - `PRODUCT_EDITED`:
   - `PENDING` / `IN_REVIEW` — обновляет `json_after` на месте, статус не
     меняется.
   - `MODERATED` / `BLOCKED` / `ARCHIVED` — возвращает карточку в `PENDING`,
-    сохраняя предыдущий снимок в `json_before`.
+    копируя текущую `json_after` в `json_before` перед обновлением.
   - `HARD_BLOCKED` — карточка не изменяется (продавец не может редактировать
     hard-blocked товар).
   - карточки нет — создаёт её в `PENDING` (на случай потери `CREATED`).
@@ -27,7 +27,11 @@ X-Service-Key: <B2B_SERVICE_KEY>
   модератора) из любого состояния; если карточки нет — создаёт её сразу в
   `ARCHIVED`.
 
-Все 4xx-ответы используют плоский контракт `{code, message}`.
+**Ответы:**
+- `202 Accepted` — событие успешно обработано.
+- `409 Conflict` — дублирующееся событие (тот же `idempotency_key` уже обработан).
+- `401 Unauthorized` — отсутствует или неверен заголовок `X-Service-Key`.
+- Все 4xx-ответы используют контракт `{code, message}`.
 
 ## Идемпотентность и транзакция
 
@@ -48,23 +52,20 @@ advisory-lock по `idempotency_key` сериализует параллельн
 
 ## ADR: хранение "что было / что стало"
 
-Рассматривались три варианта хранения diff'а товара в карточке:
-`json_before` + `json_after` (два JSONB-снимка), full snapshot (только
-`json_after`) и `delta` (только изменённые поля).
+Рассматривались три варианта:
+1. `json_before` + `json_after` (два полных JSONB-снимка)
+2. Full snapshot `json_after` (только текущее состояние)
+3. `delta` (только изменённые поля)
 
-Выбран **`json_before` + `json_after`**. Критерии:
+**Выбран вариант 1**: `json_before` + `json_after`. Критерии:
 
-- **Место в БД**: сопоставимо с full snapshot (×2 размера одного снимка);
-  `delta` компактнее, но требует накопления цепочки патчей для
-  восстановления полного состояния.
-- **Диагностика инцидента**: `json_before`/`json_after` даёт прямой ответ
-  "что было / что стало" одним запросом — без накопления серии событий
-  `PRODUCT_EDITED`. Full snapshot не показывает, что изменилось; `delta`
-  восстанавливается дороже.
-- **Удобство для модератора**: `json_before`/`json_after` напрямую рендерится
-  как side-by-side diff в UI модерации — это и есть причина повторной
-  проверки после правки.
+- **Место в БД**: два JSONB поля сопоставимы по размеру с одним full snapshot;
+  `delta` компактнее, но требует цепочки обновлений для восстановления полного состояния.
+- **Диагностика**: `json_before`/`json_after` даёт прямой ответ за один запрос без
+  накопления цепочки событий. Full snapshot не объясняет *что* изменилось; `delta`
+  требует восстановления.
+- **Модератор**: side-by-side diff в UI прямо из двух снимков — быстрая диагностика
+  причины возврата в очередь.
 
-`delta` отклонён как более сложный в восстановлении и непригодный для прямого
-рендера; full snapshot отклонён, так как не объясняет причину возврата
-карточки в очередь.
+Варианты 2-3 отклонены: full snapshot скрывает дельту; `delta` сложнее восстанавливается
+и непригоден для прямого рендера.

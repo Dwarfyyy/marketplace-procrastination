@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -5,21 +6,28 @@ from pydantic import BaseModel, Field
 
 
 class ApproveRequest(BaseModel):
-	moderator_comment: str | None = Field(default=None, max_length=1000)
+	comment: str | None = Field(default=None, max_length=1000)
 
 
 class FieldReport(BaseModel):
-	field_name: str = Field(min_length=1, max_length=255)
-	sku_id: UUID | None = None
-	comment: str = Field(min_length=1, max_length=1000)
+	field_path: str = Field(min_length=1, max_length=255)
+	message: str = Field(min_length=1, max_length=1000)
 
 
 class DeclineRequest(BaseModel):
-	blocking_reason_id: UUID
-	moderator_comment: str | None = Field(default=None, max_length=1000)
+	blocking_reason_ids: list[UUID] = Field(min_length=1)
+	comment: str | None = Field(default=None, max_length=1000)
 	field_reports: list[FieldReport] = Field(default_factory=list)
 
 
-class ModerationDecisionResponse(BaseModel):
+TicketStatus = Literal["PENDING", "IN_REVIEW", "APPROVED", "BLOCKED", "HARD_BLOCKED"]
+
+
+class TicketResponse(BaseModel):
+	id: UUID
 	product_id: UUID
-	status: Literal["MODERATED", "BLOCKED", "HARD_BLOCKED"]
+	seller_id: UUID
+	kind: Literal["PRODUCT"] = "PRODUCT"
+	status: TicketStatus
+	queue_priority: int
+	created_at: datetime
