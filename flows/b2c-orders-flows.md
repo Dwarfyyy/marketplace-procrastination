@@ -110,7 +110,8 @@ cron, (3) Django Q. **Выбран вариант 2** (cron).
 
 ```json
 {
-  "event_type": "PRODUCT_BLOCKED" | "PRODUCT_DELETED" | "SKU_OUT_OF_STOCK",
+  "event_type": "PRODUCT_BLOCKED" | "PRODUCT_HARD_BLOCKED" | "PRODUCT_DELETED"
+              | "SKU_OUT_OF_STOCK" | "SKU_BACK_IN_STOCK" | "PRICE_CHANGED",
   "idempotency_key": "uuid",
   "occurred_at": "2026-06-15T00:00:00Z",
   "payload": {
@@ -121,25 +122,36 @@ cron, (3) Django Q. **Выбран вариант 2** (cron).
 }
 ```
 
-Для `SKU_OUT_OF_STOCK` `payload` может содержать одиночный `sku_id` вместо
-`sku_ids` (формат `b2c.sku.out_of_stock` в B2B) — сервис принимает обе формы.
+Событиям уровня товара (`PRODUCT_BLOCKED`, `PRODUCT_HARD_BLOCKED`,
+`PRODUCT_DELETED`) достаточно `product_id` (`EventProductRef` в спецификации) —
+затронутые `sku_ids` резолвятся из каталога (`catalog.skus.product_id`).
+Событиям уровня SKU (`SKU_OUT_OF_STOCK`, `SKU_BACK_IN_STOCK`, `PRICE_CHANGED`)
+требуется `sku_ids` или одиночный `sku_id` (формат `b2c.sku.out_of_stock` в
+B2B) — сервис принимает обе формы.
 
 ### Алгоритм
 
 1. **Идемпотентность**: `idempotency_key` события проверяется через
    advisory-lock + таблицу `cart.product_events_processed`. Если ключ уже
-   обработан — `200 {"processed": false, "updated_count": 0}`, без побочных
+   обработан — `202 {"processed": false, "updated_count": 0}`, без побочных
    эффектов (повтор после таймаута retry от B2B не должен ничего менять
    дважды).
-2. **Обновление корзин**: по всем `sku_ids` из `payload` выполняется один
-   batch `UPDATE cart.items SET unavailable_reason = ... WHERE sku_id IN (...)`
-   — один запрос вместо N отдельных `UPDATE` по каждому SKU.
-   `unavailable_reason` определяется типом события:
-   - `PRODUCT_BLOCKED` → `PRODUCT_BLOCKED`;
-   - `PRODUCT_DELETED` → `PRODUCT_DELETED`;
-   - `SKU_OUT_OF_STOCK` → `OUT_OF_STOCK`.
-3. Ключ идемпотентности записывается в `cart.product_events_processed`, ответ
-   — `200 {"processed": true, "updated_count": N}`.
+2. **Определение SKU**: для событий уровня SKU берутся `sku_ids`/`sku_id` из
+   `payload`; для событий уровня товара — `sku_ids` всех вариантов товара из
+   `catalog.skus` по `product_id`.
+3. **Обновление корзин**: одним batch-запросом
+   `UPDATE cart.items SET unavailable_reason = ... WHERE sku_id IN (...)`.
+   Действие зависит от типа события:
+   - `PRODUCT_BLOCKED`, `PRODUCT_HARD_BLOCKED` → `unavailable_reason =
+     "PRODUCT_BLOCKED"`;
+   - `PRODUCT_DELETED` → `"PRODUCT_DELETED"`;
+   - `SKU_OUT_OF_STOCK` → `"OUT_OF_STOCK"`;
+   - `SKU_BACK_IN_STOCK` → снимает только `OUT_OF_STOCK` (`unavailable_reason =
+     NULL`), не трогая позиции, заблокированные/удалённые модерацией;
+   - `PRICE_CHANGED` → доступность не меняется (расхождение цены всплывает в
+     `cart/validate`), `updated_count = 0`.
+4. Ключ идемпотентности записывается в `cart.product_events_processed`, ответ
+   — `202 {"processed": true, "updated_count": N}`.
 
 ### Заказы не трогаются
 
@@ -157,10 +169,17 @@ cron, (3) Django Q. **Выбран вариант 2** (cron).
 - `orders_not_affected_by_product_blocked` — `OrderItem` с теми же `sku_id`
   не меняются (`unit_price`/`line_total` прежние).
 - `idempotent_event_no_side_effects` — повтор того же `idempotency_key` →
-  `200 {"processed": false, "updated_count": 0}`, `cart.items` не меняются
+  `202 {"processed": false, "updated_count": 0}`, `cart.items` не меняются
   повторно.
 - `missing_service_key_returns_401` — запрос без `X-Service-Key` → `401
   UNAUTHORIZED`.
+- `product_blocked_without_sku_ids_resolves_via_catalog` — `PRODUCT_BLOCKED`
+  только с `product_id` → `sku_ids` берутся из `catalog.skus`, корзины
+  помечаются `PRODUCT_BLOCKED`.
+- `sku_back_in_stock_clears_out_of_stock` — `SKU_BACK_IN_STOCK` снимает
+  `OUT_OF_STOCK` с позиций корзины.
+- `price_changed_does_not_change_cart_availability` — `PRICE_CHANGED` →
+  `updated_count = 0`, `unavailable_reason` не меняется.
 
 ### ADR — хранение идемпотентности входящих событий о товарах
 
