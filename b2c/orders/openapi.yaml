@@ -243,10 +243,13 @@ paths:
       summary: Событие об изменении товара от B2B
       description: >
         Принимает события о товарах от B2B (`PRODUCT_BLOCKED`,
-        `PRODUCT_DELETED`, `SKU_OUT_OF_STOCK`) и обновляет
-        `unavailable_reason` у позиций корзин (`cart.items`) с указанными
-        `sku_id`. Заказы (`orders`) не затрагиваются — цены и состав уже
-        оформленных заказов зафиксированы (см. checkout).
+        `PRODUCT_HARD_BLOCKED`, `PRODUCT_DELETED`, `SKU_OUT_OF_STOCK`,
+        `SKU_BACK_IN_STOCK`, `PRICE_CHANGED`) и обновляет `unavailable_reason`
+        у позиций корзин (`cart.items`). События уровня товара резолвят
+        затронутые `sku_id` из каталога; `SKU_BACK_IN_STOCK` снимает
+        `OUT_OF_STOCK`; `PRICE_CHANGED` доступность не меняет. Заказы
+        (`orders`) не затрагиваются — цены и состав уже оформленных заказов
+        зафиксированы (см. checkout).
 
         Идемпотентность по `idempotency_key` события: повторный вызов с тем
         же ключом (например, retry от B2B после таймаута) возвращает
@@ -267,9 +270,9 @@ paths:
             schema:
               $ref: "#/components/schemas/ProductEventRequest"
       responses:
-        "200":
+        "202":
           description: >
-            Событие обработано (или повторный вызов с тем же
+            Событие принято к обработке (или повторный вызов с тем же
             `idempotency_key` — без побочных эффектов)
           content:
             application/json:
@@ -664,8 +667,11 @@ components:
           type: string
           enum:
             - PRODUCT_BLOCKED
+            - PRODUCT_HARD_BLOCKED
             - PRODUCT_DELETED
             - SKU_OUT_OF_STOCK
+            - SKU_BACK_IN_STOCK
+            - PRICE_CHANGED
         idempotency_key:
           type: string
           format: uuid
