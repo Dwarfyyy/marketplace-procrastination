@@ -4,9 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from database.models.card import ModerationCardStatus
-
-
 class ProductEventPayload(BaseModel):
 	product_id: uuid.UUID
 	seller_id: uuid.UUID
@@ -25,4 +22,4 @@ class ProductEventResponse(BaseModel):
 	idempotency_key: uuid.UUID
 	processed: bool
 	card_id: uuid.UUID | None = None
-	status: ModerationCardStatus | None = None
+	status: str | None = None
