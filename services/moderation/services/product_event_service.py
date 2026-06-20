@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import crud.card as card_crud
@@ -18,11 +19,11 @@ def _apply_created(
 			product_id=request.payload.product_id,
 			seller_id=request.payload.seller_id,
 			status=ModerationCardStatus.PENDING,
-			json_after=request.payload.snapshot,
+			json_after=request.payload.json_after,
 		)
 	# Retried CREATED for a card that already exists: refresh the snapshot
 	# without disturbing the current moderation status.
-	card.json_after = request.payload.snapshot
+	card.json_after = request.payload.json_after
 	return card
 
 
@@ -35,7 +36,7 @@ def _apply_edited(
 			product_id=request.payload.product_id,
 			seller_id=request.payload.seller_id,
 			status=ModerationCardStatus.PENDING,
-			json_after=request.payload.snapshot,
+			json_after=request.payload.json_after,
 		)
 
 	if card.status == ModerationCardStatus.HARD_BLOCKED:
@@ -48,12 +49,12 @@ def _apply_edited(
 		or card.status == ModerationCardStatus.ARCHIVED
 	):
 		card.json_before = card.json_after
-		card.json_after = request.payload.snapshot
+		card.json_after = request.payload.json_after
 		card.status = ModerationCardStatus.PENDING
 		return card
 
 	# PENDING / IN_REVIEW: update the fields under review in place.
-	card.json_after = request.payload.snapshot
+	card.json_after = request.payload.json_after
 	return card
 
 
@@ -66,7 +67,7 @@ def _apply_deleted(
 			product_id=request.payload.product_id,
 			seller_id=request.payload.seller_id,
 			status=ModerationCardStatus.ARCHIVED,
-			json_after=request.payload.snapshot or None,
+			json_after=request.payload.json_after or None,
 		)
 
 	card.status = ModerationCardStatus.ARCHIVED
@@ -87,9 +88,12 @@ async def apply_product_event(
 
 	existing = await product_event_crud.get_processed_event(db, request.idempotency_key)
 	if existing is not None:
-		return ProductEventResponse(
-			idempotency_key=request.idempotency_key,
-			processed=False,
+		raise HTTPException(
+			status_code=409,
+			detail={
+				"code": "DUPLICATE_EVENT",
+				"message": "Event with this idempotency_key has already been processed",
+			},
 		)
 
 	card = await card_crud.lock_card_by_product(db, request.payload.product_id)

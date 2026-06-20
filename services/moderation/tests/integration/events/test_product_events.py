@@ -21,7 +21,7 @@ def _body(
 	seller_id: uuid.UUID,
 	*,
 	idempotency_key: uuid.UUID | None = None,
-	snapshot: dict | None = None,
+	json_after: dict | None = None,
 ) -> dict:
 	return {
 		"event_type": event_type,
@@ -30,14 +30,14 @@ def _body(
 		"payload": {
 			"product_id": str(product_id),
 			"seller_id": str(seller_id),
-			"snapshot": snapshot if snapshot is not None else {"title": "Product"},
+			"json_after": json_after if json_after is not None else {"title": "Product"},
 		},
 	}
 
 
 async def _post(client: AsyncClient, body: dict) -> object:
 	return await client.post(
-		"/api/v1/events/product",
+		"/api/v1/b2b/events",
 		headers=PRODUCT_EVENT_SERVICE_KEY_HEADERS,
 		json=body,
 	)
@@ -61,10 +61,10 @@ async def test_created_pending(
 	snapshot = {"title": "New product", "price": 1000}
 
 	response = await _post(
-		client, _body("PRODUCT_CREATED", product_id, seller_id, snapshot=snapshot)
+		client, _body("PRODUCT_CREATED", product_id, seller_id, json_after=snapshot)
 	)
 
-	assert response.status_code == 200
+	assert response.status_code == 202
 	body = response.json()
 	assert body["processed"] is True
 	assert body["status"] == "PENDING"
@@ -92,10 +92,10 @@ async def test_edited_returns_to_review(
 	)
 
 	response = await _post(
-		client, _body("PRODUCT_EDITED", product_id, seller_id, snapshot=new_snapshot)
+		client, _body("PRODUCT_EDITED", product_id, seller_id, json_after=new_snapshot)
 	)
 
-	assert response.status_code == 200
+	assert response.status_code == 202
 	body = response.json()
 	assert body["processed"] is True
 	assert body["status"] == "PENDING"
@@ -123,10 +123,10 @@ async def test_edited_updates_in_review(
 	)
 
 	response = await _post(
-		client, _body("PRODUCT_EDITED", product_id, seller_id, snapshot=new_snapshot)
+		client, _body("PRODUCT_EDITED", product_id, seller_id, json_after=new_snapshot)
 	)
 
-	assert response.status_code == 200
+	assert response.status_code == 202
 	body = response.json()
 	assert body["processed"] is True
 	assert body["status"] == "IN_REVIEW"
@@ -153,7 +153,7 @@ async def test_deleted_archived(
 
 	response = await _post(client, _body("PRODUCT_DELETED", product_id, seller_id))
 
-	assert response.status_code == 200
+	assert response.status_code == 202
 	body = response.json()
 	assert body["processed"] is True
 	assert body["status"] == "ARCHIVED"
@@ -174,17 +174,17 @@ async def test_duplicate_event_no_side_effects(
 		product_id,
 		seller_id,
 		idempotency_key=key,
-		snapshot={"title": "Product", "price": 500},
+		json_after={"title": "Product", "price": 500},
 	)
 
 	first = await _post(client, body)
 	second = await _post(client, body)
 
-	assert first.status_code == 200
+	assert first.status_code == 202
 	assert first.json()["processed"] is True
 
-	assert second.status_code == 200
-	assert second.json()["processed"] is False
+	assert second.status_code == 409
+	assert second.json()["code"] == "DUPLICATE_EVENT"
 
 	# Only one card was created, and its status was not touched again.
 	result = await db_session.execute(
@@ -202,7 +202,7 @@ async def test_missing_service_header_401(
 	product_id = uuid.uuid4()
 
 	response = await client.post(
-		"/api/v1/events/product",
+		"/api/v1/b2b/events",
 		json=_body("PRODUCT_CREATED", product_id, seller_id),
 	)
 
