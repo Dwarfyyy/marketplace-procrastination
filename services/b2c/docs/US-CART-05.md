@@ -2,15 +2,27 @@
 
 ## Что сделано
 
-Тематические подборки для главной страницы. 
-Данные каталога читаются из локальной БД B2C, без отдельного обращения к B2B - это архитектурное решение - хранить данные в B2C и через очередь сообщений управлять обновлениями данных в сервисах.
-Реализован единственный метод работы с коллекциями, представленный в спецификации OpenAPI, - `GET /api/v1/catalog/collections`
+Тематические подборки для главной страницы. B2C хранит **только список UUID**
+товаров подборки; актуальные данные всегда запрашиваются из B2B
+batch-обогащением. Удалённые/заблокированные в B2B товары просто не попадают в
+`products`, подборка не ломается.
+
+Контракт — один эндпоинт `GET /catalog/collections`, отдающий подборки с
+товарами внутри — в соответствии с канон-flow
+`flows/b2c-cart-flows.md#b2c-15-collections`, `b2c/cart/openapi.yaml` и
+каноном `b2c/openapi.yaml` (схема `Collection`, `required: [id, name,
+products]`).
 
 ### API
 
 - **`GET /api/v1/catalog/collections`**
-  - **Код 200**: массив с товарами коллекции. В коллекцию входят только товары со статусом Moderated и с доступным количеством больше нуля.
-
+  - **200**: массив активных подборок с товарами внутри
+    (`Collection`: `id`, `name`, `description`, `cover_image_url`,
+    `target_url`, `products: CatalogProductCard[]`), отсортированный по
+    `priority`. В `products` попадают только доступные товары
+    (`MODERATED`, не удалён, остаток `> 0`); недоступные в выдачу не
+    включаются. Нет доступных товаров → `products: []`. Нет активных
+    подборок → `200` с `[]`.
 
 ## Запуск
 
@@ -26,19 +38,30 @@ make build up migrate
 make test
 ```
 
-- `tests/integration/cart/test_collections.py`
-  - `test_collection_products_enriched` - подборки с карточками товаров
-  - `test_blocked_products_not_in_collections` - `BLOCKED` не в `products`, `MODERATED` остаётся
-  - `test_out_of_stock_products_not_in_collections` - товар не отображается, если закончился
-Автотесты `collections_list_returns_metadata_without_products`, `collection_products_enriched_from_b2b`, `unavailable_products_in_unavailable_ids`, `unknown_collection_returns_404` не реализованы, поскольку реализация АПИ-методов в спецификации OpenAPI (которая считается более приоритетной по сравнению с канон флоу) отличается от самого канон флоу
+`tests/integration/cart/test_collections.py` — канон-сценарии US-CART-05:
+
+- `test_collections_list_returns_metadata_with_products` — список подборок с
+  метаданными и `products` внутри;
+- `test_collection_products_enriched_from_b2b` — товары обогащены из B2B
+  (категория, продавец);
+- `test_unavailable_products_excluded_from_products` —
+  заблокированные/удалённые в B2B в `products` не попадают;
+- `test_no_active_collections_returns_empty_list` — нет активных подборок →
+  `200` `[]`.
 
 ## ADR
 
 **Связь подборки с товарами**
 
-- **Альтернативы**: массив UUID в поле подборки; отдельная таблица-связка; копия данных товара в B2C.
-- **Выбор**: таблица `storefront.collection_products` (`collection_id`, `product_id`).
-- **Критерии**: проще менять состав подборки без миграций JSON-массива; при удалении/блокировке товара в каталоге не нужна синхронизация копий.
+- **Альтернативы**: массив UUID в поле подборки; отдельная таблица-связка;
+  копия данных товара в B2C.
+- **Выбор**: таблица-связка `storefront.collection_products`
+  (`collection_id`, `product_id`).
+- **Критерии**: (1) простота обновления состава — `INSERT`/`DELETE` без
+  перезаписи JSON-массива и миграций; (2) консистентность при удалении товара
+  в B2B — B2C хранит только UUID и проверяет доступность обогащением на каждый
+  запрос, так что удалённый товар автоматически отсеивается из `products` без
+  синхронизации копий.
 
 ## Файлы
 
@@ -50,7 +73,7 @@ make test
 
 ### Сервисы
 
-- `services/collection_service.py`
+- `services/collection_service.py` — `get_collections`
 
 ### CRUD
 

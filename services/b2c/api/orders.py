@@ -9,6 +9,7 @@ from core import db
 from database.models.orders.order import OrderStatusEnum
 from exceptions.order import (
 	AddressNotFoundError,
+	B2BUnavailableError,
 	EmptyCartError,
 	IdempotencyConflictError,
 	InvalidIdempotencyKeyError,
@@ -114,6 +115,11 @@ async def create_order(
 				"message": "Partial reserve failed",
 				"details": details,
 			},
+		) from err
+	except B2BUnavailableError as err:
+		raise fastapi.HTTPException(
+			status_code=503,
+			detail={"code": "B2B_UNAVAILABLE", "message": "Catalog service is unavailable"},
 		) from err
 
 	if isinstance(result, CartValidationResponse):

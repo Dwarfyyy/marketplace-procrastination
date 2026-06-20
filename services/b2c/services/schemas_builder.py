@@ -6,10 +6,13 @@ from database.models.catalog.variants import Sku
 from database.models.orders.order import Order
 from schemas.catalog import (
 	CatalogProductCard,
+	CatalogProductDetail,
 	CatalogProductSeller,
+	CatalogSku,
 	CategoryRef,
 	ImageRef,
 )
+from schemas.characteristic import Characteristic
 from schemas.order import OrderResponse
 
 
@@ -48,8 +51,8 @@ def build_category_ref(
 	)
 
 
-def product_images(product: Product) -> list[ImageRef]:
-	images = sorted(product.images or [], key=lambda image: image.ordering)
+def image_refs(images: list) -> list[ImageRef]:
+	ordered = sorted(images or [], key=lambda image: image.ordering)
 	return [
 		ImageRef(
 			id=image.id,
@@ -58,8 +61,46 @@ def product_images(product: Product) -> list[ImageRef]:
 			ordering=image.ordering,
 			is_main=index == 0,
 		)
-		for index, image in enumerate(images)
+		for index, image in enumerate(ordered)
 	]
+
+
+def product_images(product: Product) -> list[ImageRef]:
+	return image_refs(product.images)
+
+
+def build_catalog_sku(sku: Sku) -> CatalogSku:
+	return CatalogSku(
+		id=sku.id,
+		name=sku.name,
+		price=sku.price,
+		discount=sku.discount,
+		available_quantity=sku.active_quantity,
+		characteristics=[
+			Characteristic.model_validate(characteristic)
+			for characteristic in (sku.characteristics or [])
+		],
+		images=image_refs(sku.images),
+	)
+
+
+def build_catalog_product_detail(product: Product) -> CatalogProductDetail:
+	skus = list(product.skus or [])
+	min_price, has_stock = sku_stats(skus)
+	return CatalogProductDetail(
+		id=product.id,
+		name=product.title,
+		slug=product.slug,
+		description=product.description,
+		min_price=min_price,
+		has_stock=has_stock,
+		images=product_images(product),
+		characteristics=[
+			Characteristic.model_validate(characteristic)
+			for characteristic in (product.characteristics or [])
+		],
+		skus=[build_catalog_sku(sku) for sku in skus],
+	)
 
 
 def sku_stats(skus: list[Sku]) -> tuple[int, bool]:
@@ -115,6 +156,13 @@ def build_catalog_product_cards(
 		)
 		for product in products
 	]
+
+
+def _cancel_reason(order: Order) -> str | None:
+	for status in reversed(order.status_history):
+		if status.status.value in ("CANCELLED", "CANCEL_PENDING"):
+			return status.reason
+	return None
 
 
 def build_order_response(order: Order) -> OrderResponse:
@@ -174,6 +222,7 @@ def build_order_response(order: Order) -> OrderResponse:
 			for status in order.status_history
 		],
 		comment=order.comment,
+		cancel_reason=_cancel_reason(order),
 		created_at=order.created_at,
 		paid_at=order.paid_at,
 	)

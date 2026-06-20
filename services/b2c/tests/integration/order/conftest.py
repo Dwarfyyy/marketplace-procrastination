@@ -26,6 +26,14 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+@pytest.fixture(autouse=True)
+def mock_b2b_fulfill(monkeypatch: pytest.MonkeyPatch) -> None:
+	async def _noop(*args, **kwargs) -> None:
+		pass
+
+	monkeypatch.setattr("services.order_service.b2b_client.fulfill_inventory", _noop)
+
+
 @dataclass(frozen=True, slots=True)
 class OrderData:
 	order: Order
@@ -245,6 +253,100 @@ async def assembling_order_data(db_session: AsyncSession) -> OrderData:
 			*order_items,
 		]
 	)
+	await db_session.commit()
+	return OrderData(
+		order=order,
+		order_items=order_items,
+		address=address,
+		payment_method=payment_method,
+		skus=skus,
+		product=product,
+		cart_items=[],
+	)
+
+
+@pytest.fixture()
+async def delivered_order_data(db_session: AsyncSession) -> OrderData:
+	user = UserFactory.build()
+	address = AddressFactory.build(user_id=user.id)
+	payment_method = PaymentMethodFactory.build(user_id=user.id)
+	category = CategoryFactory.build()
+	product = ProductFactory.build(
+		category_id=category.id,
+		status=ProductStatusEnum.MODERATED,
+	)
+	skus = [SkuFactory.build(product_id=product.id) for _ in range(3)]
+	order = OrderFactory.build(
+		buyer_id=user.id,
+		address_id=address.id,
+		payment_method_id=payment_method.id,
+		status=OrderStatusEnum.DELIVERED,
+	)
+	order_items = [OrderItemFactory.build(order_id=order.id) for _ in range(3)]
+	db_session.add_all(
+		[
+			user,
+			address,
+			payment_method,
+			category,
+			product,
+			*skus,
+			order,
+			*order_items,
+		]
+	)
+	await db_session.commit()
+	return OrderData(
+		order=order,
+		order_items=order_items,
+		address=address,
+		payment_method=payment_method,
+		skus=skus,
+		product=product,
+		cart_items=[],
+	)
+
+
+@pytest.fixture()
+async def delivering_order_data(db_session: AsyncSession) -> OrderData:
+	user = UserFactory.build()
+	address = AddressFactory.build(user_id=user.id)
+	payment_method = PaymentMethodFactory.build(user_id=user.id)
+	category = CategoryFactory.build()
+	product = ProductFactory.build(
+		category_id=category.id,
+		status=ProductStatusEnum.MODERATED,
+	)
+	skus = [SkuFactory.build(product_id=product.id) for _ in range(3)]
+	for sku in skus:
+		sku.reserved_quantity = 2
+	order = OrderFactory.build(
+		buyer_id=user.id,
+		address_id=address.id,
+		payment_method_id=payment_method.id,
+		status=OrderStatusEnum.DELIVERING,
+	)
+	order_items = [
+		OrderItemFactory.build(order_id=order.id, sku_id=sku.id, quantity=2)
+		for sku in skus
+	]
+	order_status_history = OrderStatusHistoryFactory.build(
+		order_id=order.id, status=OrderStatusEnum.PAID
+	)
+	db_session.add_all(
+		[
+			user,
+			address,
+			payment_method,
+			category,
+			product,
+			*skus,
+			order,
+			*order_items,
+			order_status_history,
+		]
+	)
+	await db_session.commit()
 	return OrderData(
 		order=order,
 		order_items=order_items,

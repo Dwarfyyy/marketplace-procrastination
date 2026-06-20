@@ -8,11 +8,11 @@
 
 Перечень реализованных эндпоинтов:
 
-- `GET /api/v1/products`
-  - **Query/Path params**: `category_id` (обязательный), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`, допустимые значения: `rating`, `popularity`, `price_asc`, `price_desc`, `date_desc`, `discount_desc`), `search` (опционально, минимум 4 символа после trim)
-  - **Код 200**: `ProductShortListResponse` — список товаров с полями `items[]` (id, title, image, price, in_stock, is_in_cart), `total_count`, `limit`, `offset`
-  - **Код 400**: `Invalid sort parameter. Allowed: ...` (невалидный параметр сортировки) / `Search query must be at least 3 characters` (поисковый запрос короче 3 символов)
-  - **Код 500**: текст ошибки (прочие сбои)
+- `GET /api/v1/catalog/products`
+  - **Query/Path params**: `filter` (deepObject, `style: deepObject, explode: true` — передаётся как `filter[category_id]=...&filter[price_min]=...`; `category_id` — UUID-ключ внутри `filter` согласно `CatalogFilter`), `limit` (default `20`), `offset` (default `0`), `sort` (default `popularity`, допустимые значения: `price_asc`, `price_desc`, `popularity`, `new`), `q` (опционально, минимум 4 символа после trim)
+  - **Код 200**: `PaginatedCatalogProducts` — список карточек `CatalogProductCard` в `items[]` (поля: `id`, `name`, `min_price`, `old_price`, `slug`, `category`, `has_stock`, `rating`, `reviews_count`, `images[]` (`ImageRef`), `seller`), плюс `total_count`, `limit`, `offset`
+  - **Код 400**: `Invalid sort parameter. Allowed: ...` (невалидный параметр сортировки) / `Search query must be at least 4 characters` (поисковый запрос короче 4 символов) / `filter[category_id] must be a valid UUID` (невалидный UUID в `filter[category_id]`)
+  - **Код 502**: `B2B_UNAVAILABLE` (каталог недоступен)
 
 - `GET /api/v1/catalog/facets/`
   - **Query/Path params**: `category_id` (обязательный UUID), `filters` (опционально, JSON-строка применённых фильтров)
@@ -40,7 +40,8 @@ make test
 - `tests/integration/test_catalog.py::test_invalid_sort_returns_400` — невалидный параметр сортировки возвращает 400
 - `tests/integration/test_catalog.py::test_search_description_returns_matching_products` — поиск по описанию возвращает соответствующие товары
 - `tests/integration/test_catalog.py::test_search_title_returns_matching_products` — поиск по названию возвращает соответствующие товары
-- `tests/integration/test_catalog.py::test_short_query_returns_400` — короткий поисковый запрос (< 4 символов) возвращает 400
+- `tests/integration/test_catalog.py::test_short_query_is_accepted` — короткий поисковый запрос принимается (openapi не задаёт минимальной длины), возвращает 200
+- `tests/integration/test_catalog.py::test_query_over_max_length_returns_400` — поисковый запрос длиннее 200 символов (maxLength по openapi) возвращает 400
 - `tests/integration/test_catalog.py::test_empty_results_returns_200` — пустой результат поиска возвращает 200 с пустым списком
 - `tests/integration/test_catalog.py::test_special_chars_do_not_break_query` — специальные символы в поиске не ломают запрос
 - `tests/integration/test_catalog.py::test_products_list_filters_only_visible_products` — список товаров фильтрует только видимые товары (по статусу и наличию на складе)

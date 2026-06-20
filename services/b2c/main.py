@@ -9,6 +9,7 @@ from api import (
 	breadcrumbs,
 	cart,
 	catalog,
+	events,
 	favorite,
 	subscriptions,
 	auth,
@@ -18,6 +19,7 @@ from core.config import settings
 from core.db import get_db
 from services import category_service
 from middlewares.token_verification import verify_token
+from middlewares.service_key_verification import verify_service_key
 
 # Configure logging
 if settings.DEBUG:
@@ -92,10 +94,12 @@ app.add_middleware(
 )
 
 app.middleware("http")(verify_token)
+app.middleware("http")(verify_service_key)
 
 app.include_router(product.router)
 app.include_router(breadcrumbs.router)
 app.include_router(cart.router)
+app.include_router(events.router)
 app.include_router(favorite.router)
 app.include_router(catalog.router)
 app.include_router(auth.router)

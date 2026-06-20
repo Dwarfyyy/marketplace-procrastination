@@ -1,9 +1,11 @@
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import OperationalError
 
 from tests.integration.catalog.conftest import (
 	CategoriesTreeData,
 	CategoryWithProductsData,
+	OtherCategoryWithProductData,
 	VisibilityProductsData,
 )
 
@@ -56,21 +58,29 @@ async def test_facets_return_counts_per_filter_value(
 async def test_catalog_returns_filtered_sorted_products(
 	client: AsyncClient,
 	category_with_products: CategoryWithProductsData,
+	other_category_with_product: OtherCategoryWithProductData,
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
+			"filter[category_id]": str(category_with_products.category.id),
 		},
 	)
 
 	assert response.status_code == 200
 	body = response.json()
 	items = body["items"]
-	assert len(items) == 2
+	returned_ids = [item["id"] for item in items]
+
+	# The deepObject filter must isolate the requested category: only its two
+	# products are returned, and the product from the other category (which is
+	# also visible and in stock) is excluded.
+	assert returned_ids == [
+		str(category_with_products.products[0].id),
+		str(category_with_products.products[1].id),
+	]
 	assert body["total_count"] == 2
-	assert items[0]["id"] == str(category_with_products.products[0].id)
-	assert items[1]["id"] == str(category_with_products.products[1].id)
+	assert str(other_category_with_product.product.id) not in returned_ids
 
 
 @pytest.mark.parametrize("sort", ["invalid", "title_asc", "title_desc"])
@@ -78,8 +88,11 @@ async def test_invalid_sort_returns_400(
 	client: AsyncClient, category_with_products: CategoryWithProductsData, sort: str
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
-		params={"category_id": str(category_with_products.category.id), "sort": sort},
+		"/api/v1/catalog/products",
+		params={
+			"filter[category_id]": str(category_with_products.category.id),
+			"sort": sort,
+		},
 	)
 	assert response.status_code == 400
 
@@ -88,10 +101,10 @@ async def test_search_description_returns_matching_products(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
-			"search": "Description 1",
+			"filter[category_id]": str(category_with_products.category.id),
+			"q": "Description 1",
 		},
 	)
 	assert response.status_code == 200
@@ -106,10 +119,10 @@ async def test_search_title_returns_matching_products(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
-			"search": "Product 1",
+			"filter[category_id]": str(category_with_products.category.id),
+			"q": "Product 1",
 		},
 	)
 	assert response.status_code == 200
@@ -120,14 +133,30 @@ async def test_search_title_returns_matching_products(
 
 
 @pytest.mark.parametrize("search", ["t", "te", "tes"])
-async def test_short_query_returns_400(
+async def test_short_query_is_accepted(
 	client: AsyncClient, category_with_products: CategoryWithProductsData, search: str
 ) -> None:
+	# b2c/openapi.yaml imposes no minimum search length, so short queries are
+	# valid requests rather than 400s.
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
-			"search": search,
+			"filter[category_id]": str(category_with_products.category.id),
+			"q": search,
+		},
+	)
+	assert response.status_code == 200
+
+
+async def test_query_over_max_length_returns_400(
+	client: AsyncClient, category_with_products: CategoryWithProductsData
+) -> None:
+	# b2c/openapi.yaml caps the search query at maxLength: 200.
+	response = await client.get(
+		"/api/v1/catalog/products",
+		params={
+			"filter[category_id]": str(category_with_products.category.id),
+			"q": "a" * 201,
 		},
 	)
 	assert response.status_code == 400
@@ -137,10 +166,10 @@ async def test_empty_results_returns_200(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
-			"search": "Not exists",
+			"filter[category_id]": str(category_with_products.category.id),
+			"q": "Not exists",
 		},
 	)
 	assert response.status_code == 200
@@ -152,10 +181,10 @@ async def test_special_chars_do_not_break_query(
 	client: AsyncClient, category_with_products: CategoryWithProductsData
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
+		"/api/v1/catalog/products",
 		params={
-			"category_id": str(category_with_products.category.id),
-			"search": "!@#$%^&*()",
+			"filter[category_id]": str(category_with_products.category.id),
+			"q": "!@#$%^&*()",
 		},
 	)
 	assert response.status_code == 200
@@ -168,8 +197,8 @@ async def test_products_list_filters_only_visible_products(
 	visibility_products: VisibilityProductsData,
 ) -> None:
 	response = await client.get(
-		"/api/v1/products",
-		params={"category_id": str(visibility_products.category.id)},
+		"/api/v1/catalog/products",
+		params={"filter[category_id]": str(visibility_products.category.id)},
 	)
 	assert response.status_code == 200
 	body = response.json()
@@ -177,3 +206,27 @@ async def test_products_list_filters_only_visible_products(
 	assert str(visibility_products.visible_product.id) in ids
 	assert str(visibility_products.hidden_by_status_product.id) not in ids
 	assert str(visibility_products.hidden_by_stock_product.id) not in ids
+
+
+async def test_b2b_unavailable_returns_502(
+	client: AsyncClient,
+	category_with_products: CategoryWithProductsData,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	async def _raise_unavailable(*args, **kwargs):
+		raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+	monkeypatch.setattr(
+		"services.product_service.product_crud.get_products_list",
+		_raise_unavailable,
+	)
+
+	response = await client.get(
+		"/api/v1/catalog/products",
+		params={"filter[category_id]": str(category_with_products.category.id)},
+	)
+
+	assert response.status_code == 502
+	body = response.json()
+	assert body["code"] == "B2B_UNAVAILABLE"
+	assert "message" in body

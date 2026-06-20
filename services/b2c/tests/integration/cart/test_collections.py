@@ -9,19 +9,28 @@ from tests.integration.cart.conftest import CollectionsData
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
-async def test_collection_products_enriched(
+async def test_collections_list_returns_metadata_with_products(
 	client: AsyncClient,
 	collections_data: CollectionsData,
 ) -> None:
+	"""Список подборок отдаёт метаданные и товары внутри (`products`)."""
 	response = await client.get("/api/v1/catalog/collections")
 	assert response.status_code == 200
 	body = response.json()
+
+	expected_ids = {str(collection.id) for collection in collections_data.collections}
 	assert len(body) == len(collections_data.collections)
-	assert all(
-		collection["id"]
-		in [str(collection.id) for collection in collections_data.collections]
-		for collection in body
-	)
+	assert {collection["id"] for collection in body} == expected_ids
+	for collection in body:
+		assert "name" in collection
+		assert isinstance(collection["products"], list)
+
+
+async def test_collection_products_enriched_from_b2b(
+	client: AsyncClient,
+	collections_data: CollectionsData,
+) -> None:
+	"""Товары подборки обогащены данными из B2B (категория, продавец)."""
 	products_by_id = {product.id: product for product in collections_data.products}
 	categories_by_id = {
 		category.id: category for category in collections_data.categories
@@ -31,49 +40,52 @@ async def test_collection_products_enriched(
 		for product in collections_data.products
 		if product.status == ProductStatusEnum.MODERATED
 	}
-	for collection in body:
-		for item in collection["products"]:
-			assert item["id"] in moderated_ids
-			db_product = products_by_id[uuid.UUID(item["id"])]
-			category = categories_by_id[uuid.UUID(item["category"]["id"])]
-			assert item["category"]["name"] == category.name
-			assert item["seller"]["id"] == str(db_product.seller.id)
-			assert item["seller"]["display_name"] == db_product.seller.company_name
 
-
-async def test_blocked_products_not_in_collections(
-	client: AsyncClient,
-	blocked_collections_data: CollectionsData,
-) -> None:
 	response = await client.get("/api/v1/catalog/collections")
 	assert response.status_code == 200
 	body = response.json()
 
-	collection_id = str(blocked_collections_data.collections[0].id)
-	blocked_ids = {
-		str(product.id)
-		for product in blocked_collections_data.products
-		if product.status == ProductStatusEnum.BLOCKED
-	}
+	collection = body[0]
+	assert {item["id"] for item in collection["products"]} == moderated_ids
+	for item in collection["products"]:
+		db_product = products_by_id[uuid.UUID(item["id"])]
+		category = categories_by_id[uuid.UUID(item["category"]["id"])]
+		assert item["category"]["name"] == category.name
+		assert item["seller"]["id"] == str(db_product.seller.id)
+		assert item["seller"]["display_name"] == db_product.seller.company_name
+
+
+async def test_unavailable_products_excluded_from_products(
+	client: AsyncClient,
+	blocked_collections_data: CollectionsData,
+) -> None:
+	"""Удалённые/заблокированные в B2B не попадают в `products`."""
 	moderated_ids = {
 		str(product.id)
 		for product in blocked_collections_data.products
 		if product.status == ProductStatusEnum.MODERATED
 	}
+	blocked_ids = {
+		str(product.id)
+		for product in blocked_collections_data.products
+		if product.status == ProductStatusEnum.BLOCKED
+	}
 
-	collection = next(item for item in body if item["id"] == collection_id)
+	response = await client.get("/api/v1/catalog/collections")
+	assert response.status_code == 200
+	body = response.json()
+
+	collection = body[0]
 	product_ids = {item["id"] for item in collection["products"]}
 
-	assert len(product_ids) == 1
 	assert product_ids == moderated_ids
 	assert product_ids.isdisjoint(blocked_ids)
 
 
-async def test_out_of_stock_products_not_in_collections(
+async def test_no_active_collections_returns_empty_list(
 	client: AsyncClient,
-	out_of_stock_collections_data: CollectionsData,  # noqa
 ) -> None:
+	"""Нет активных подборок → `200` с пустым массивом."""
 	response = await client.get("/api/v1/catalog/collections")
 	assert response.status_code == 200
-	body = response.json()
-	assert body[0]["products"] == []
+	assert response.json() == []

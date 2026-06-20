@@ -1,3 +1,4 @@
+import httpx
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 import pytest
@@ -142,6 +143,37 @@ async def test_idempotency_returns_existing_order(
 	assert body["id"] == str(order_data.order.id)
 	assert body["status"] == order_data.order.status.value
 	assert body["buyer_id"] == str(order_data.order.buyer_id)
+
+
+async def test_b2b_unavailable_returns_503(
+	client: AsyncClient,
+	db_session: AsyncSession,
+	order_data: OrderData,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	async def _raise_unavailable(*args, **kwargs):
+		raise httpx.ConnectError("Connection refused")
+
+	monkeypatch.setattr(
+		"clients.b2b_client.reserve_inventory",
+		_raise_unavailable,
+	)
+
+	response = await client.post(
+		"/api/v1/orders",
+		headers={
+			**await auth_headers(order_data.order.buyer_id, db_session),
+			"Idempotency-Key": str(uuid.uuid4()),
+		},
+		json={
+			"address_id": str(order_data.address.id),
+			"payment_method_id": str(order_data.payment_method.id),
+		},
+	)
+	assert response.status_code == 503
+	body = response.json()
+	assert body["code"] == "B2B_UNAVAILABLE"
+	assert "message" in body
 
 
 async def test_order_not_authorized_returns_401(

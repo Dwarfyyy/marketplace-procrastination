@@ -216,6 +216,7 @@ async def get_category_filters(db: AsyncSession, category_id: str) -> FilterResp
 	filters_schemas = [
 		Filter(
 			id=filter.id,
+			slug=filter.slug,
 			name=filter.name,
 			type=filter.type,
 			value=await category_crud.get_filter_values(db, filter.id)
@@ -233,7 +234,7 @@ async def get_category_filters(db: AsyncSession, category_id: str) -> FilterResp
 async def get_category_facets(
 	db: AsyncSession,
 	category_id: uuid.UUID,
-	filters: str | None = None,  # TODO: Why is it here? # noqa
+	filters: str | None = None,
 ) -> FacetsResponse:
 	from database.models.catalog.base import FilterTypeEnum
 
@@ -242,10 +243,9 @@ async def get_category_facets(
 	if not category:
 		raise CategoryNotFoundError(f"Category with id {category_id} not found")
 
-	available_filters = await category_crud.get_category_filters(db, category_id)
+	applied_filters = json.loads(filters) if filters else None
 
-	# Преобразуем фильтры в схему Filter
-	from schemas.category import Filter
+	available_filters = await category_crud.get_category_filters(db, category_id)
 
 	filters_list = []
 	for filter_item in available_filters:
@@ -256,6 +256,7 @@ async def get_category_facets(
 		filters_list.append(
 			Filter(
 				id=filter_item.id,
+				slug=filter_item.slug,
 				name=filter_item.name,
 				type=filter_item.type,
 				value=filter_values,
@@ -271,7 +272,7 @@ async def get_category_facets(
 			filter_values = await category_crud.get_filter_values(db, filter_item.id)
 			for value in filter_values:
 				count = await product_crud.count_products_by_filter(
-					db, category_id, filter_item.id, value
+					db, category_id, filter_item.id, value, applied_filters
 				)
 				facet_values.append(FacetValue(value=value, count=count))
 		facets.append(Facet(name=filter_item.name, values=facet_values))

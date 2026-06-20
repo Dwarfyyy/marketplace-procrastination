@@ -51,6 +51,7 @@ class Order(Base):
 		DateTime(timezone=True), server_default=func.now()
 	)
 	paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+	fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 	updated_at: Mapped[datetime] = mapped_column(
 		DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
 	)

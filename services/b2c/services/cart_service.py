@@ -38,7 +38,8 @@ def _sku_unavailable(product: Product, sku: Sku) -> Optional[str]:
 def _build_cart_item(
 	cart_item: CartItemDB, sku: Sku, product: Product, image: Optional[Image]
 ) -> CartItem:
-	is_available = _sku_unavailable(product, sku) is None
+	unavailable_reason = _sku_unavailable(product, sku)
+	is_available = unavailable_reason is None
 	unit_price = sku.price
 	line_total = unit_price * cart_item.quantity if is_available else 0
 	name = f"{product.title} — {sku.name}"
@@ -63,6 +64,7 @@ def _build_cart_item(
 		line_total=line_total,
 		available_quantity=sku.active_quantity,
 		is_available=is_available,
+		unavailable_reason=unavailable_reason,
 		image=image_ref,
 	)
 

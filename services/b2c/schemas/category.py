@@ -6,6 +6,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
+from database.models.catalog.base import FilterTypeEnum
+
 
 class CategoryParent(BaseModel):
 	id: uuid.UUID
@@ -41,19 +43,14 @@ class CategoryInfoResponse(BaseModel):
 	updated_at: str
 
 
-class FilterTypesEnum(str, Enum):
-	list = "list"
-	range = "range"
-	switch = "switch"
-
-
 class Filter(BaseModel):
+	id: uuid.UUID
 	slug: str
 	name: str
-	type: FilterTypesEnum
-	value: str | float
-	min: float | None
-	max: float | None
+	type: FilterTypeEnum
+	value: list[str] | str | float | None = None
+	min: float | None = None
+	max: float | None = None
 
 
 class FilterResponse(BaseModel):

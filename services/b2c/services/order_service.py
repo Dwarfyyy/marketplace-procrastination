@@ -1,23 +1,28 @@
 import hashlib
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import clients.b2b_client as b2b_client
 import crud.address as address_crud
 import crud.cart as cart_crud
 import crud.order as order_crud
 import crud.payment_method as payment_method_crud
+from core.config import settings
 from database.models.catalog.base import ProductStatusEnum
 from database.models.orders.order import OrderStatusEnum
 from exceptions.order import (
 	AddressNotFoundError,
+	B2BUnavailableError,
 	EmptyCartError,
 	IdempotencyConflictError,
 	InvalidIdempotencyKeyError,
 	OrderNotCancelableError,
+	OrderNotDeliverableError,
 	OrderNotFoundError,
 	PaymentMethodNotFoundError,
 	ReserveFailedError,
@@ -25,6 +30,8 @@ from exceptions.order import (
 from schemas.cart import CartValidationResponse
 from schemas.order import OrderResponse, PaginatedOrders
 from services import cart_service, schemas_builder
+
+logger = logging.getLogger(__name__)
 
 
 def parse_idempotency_key(value: str) -> uuid.UUID:
@@ -177,10 +184,24 @@ async def checkout(
 	if failed_items:
 		raise ReserveFailedError(failed_items)
 
+	new_order_id = uuid.uuid4()
+	items_for_b2b = [
+		{"sku_id": str(sku_id), "quantity": qty}
+		for sku_id, qty in requested_by_sku.items()
+	]
+	await b2b_client.reserve_inventory(
+		order_id=new_order_id,
+		idempotency_key=idempotency_key,
+		items=items_for_b2b,
+		b2b_base_url=settings.B2B_BASE_URL,
+		service_key=settings.B2B_SERVICE_KEY,
+	)
+
 	now = datetime.now(timezone.utc)
 	try:
-		order_id = await order_crud.reserve_and_create_order(
+		created_id = await order_crud.create_order_with_items(
 			db,
+			order_id=new_order_id,
 			buyer_id=buyer_id,
 			idempotency_key=idempotency_key,
 			request_hash=request_hash,
@@ -188,10 +209,9 @@ async def checkout(
 			payment_method_id=payment_method_id,
 			comment=comment,
 			now=now,
-			requested_by_sku=requested_by_sku,
 			enriched_items=enriched_items,
 		)
-		order = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
+		order = await order_crud.get_order_by_id_for_buyer(db, created_id, buyer_id)
 		return schemas_builder.build_order_response(order)
 
 	except IntegrityError:
@@ -203,23 +223,115 @@ async def checkout(
 		return schemas_builder.build_order_response(existing2)
 
 
+_CANCELLABLE_STATUSES = {
+	OrderStatusEnum.CREATED,
+	OrderStatusEnum.PAID,
+	OrderStatusEnum.ASSEMBLING,
+}
+
+
 async def cancel_order(
 	db: AsyncSession,
 	order_id: uuid.UUID,
 	buyer_id: uuid.UUID,
 	reason: str | None = None,
 ) -> OrderResponse:
-	order_updated = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
-	if order_updated is None:
+	order = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
+	if order is None:
 		raise OrderNotFoundError()
 
-	if order_updated.status not in [OrderStatusEnum.CREATED, OrderStatusEnum.PAID]:
+	if order.status not in _CANCELLABLE_STATUSES:
 		raise OrderNotCancelableError()
 
-	await order_crud.cancel_order(db, order_id, buyer_id, reason=reason)
-	order_updated = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
+	items_for_b2b = [
+		{"sku_id": str(item.sku_id), "quantity": item.quantity}
+		for item in order.items
+	]
+	try:
+		await b2b_client.unreserve_inventory(
+			order_id=order.id,
+			items=items_for_b2b,
+			b2b_base_url=settings.B2B_BASE_URL,
+			service_key=settings.B2B_SERVICE_KEY,
+		)
+	except B2BUnavailableError:
+		logger.exception(
+			"Unreserve failed for order %s, marking CANCEL_PENDING", order_id
+		)
+		await order_crud.change_order_status(
+			db, order.id, OrderStatusEnum.CANCEL_PENDING, reason
+		)
+		order_updated = await order_crud.get_order_by_id_for_buyer(
+			db, order_id, buyer_id
+		)
+		return schemas_builder.build_order_response(order_updated)
 
+	await order_crud.change_order_status(db, order.id, OrderStatusEnum.CANCELLED, reason)
+	order_updated = await order_crud.get_order_by_id_for_buyer(db, order_id, buyer_id)
 	return schemas_builder.build_order_response(order_updated)
+
+
+async def deliver_order(db: AsyncSession, order_id: uuid.UUID) -> OrderResponse:
+	order = await order_crud.get_order_by_id(db, order_id)
+	if order is None:
+		raise OrderNotFoundError()
+
+	if order.status == OrderStatusEnum.CANCELLED:
+		raise OrderNotDeliverableError()
+
+	if order.status != OrderStatusEnum.DELIVERED:
+		await order_crud.change_order_status(
+			db, order.id, OrderStatusEnum.DELIVERED, None
+		)
+		await db.commit()
+		order = await order_crud.get_order_by_id(db, order_id)
+
+	if order.fulfilled_at is None:
+		now = datetime.now(timezone.utc)
+		items_for_b2b = [
+			{"sku_id": str(item.sku_id), "quantity": item.quantity}
+			for item in order.items
+		]
+		try:
+			await b2b_client.fulfill_inventory(
+				order_id=order.id,
+				items=items_for_b2b,
+				b2b_base_url=settings.B2B_BASE_URL,
+				service_key=settings.B2B_SERVICE_KEY,
+			)
+			await order_crud.mark_order_fulfilled(db, order, now)
+			await db.commit()
+		except B2BUnavailableError:
+			logger.exception(
+				"Fulfill failed for order %s, will retry asynchronously", order_id
+			)
+
+	order_updated = await order_crud.get_order_by_id(db, order_id)
+	return schemas_builder.build_order_response(order_updated)
+
+
+async def retry_pending_fulfillments(db: AsyncSession) -> int:
+	orders = await order_crud.get_orders_pending_fulfillment(db)
+	now = datetime.now(timezone.utc)
+	fulfilled_count = 0
+	for order in orders:
+		items_for_b2b = [
+			{"sku_id": str(item.sku_id), "quantity": item.quantity}
+			for item in order.items
+		]
+		try:
+			await b2b_client.fulfill_inventory(
+				order_id=order.id,
+				items=items_for_b2b,
+				b2b_base_url=settings.B2B_BASE_URL,
+				service_key=settings.B2B_SERVICE_KEY,
+			)
+			await order_crud.mark_order_fulfilled(db, order, now)
+			await db.commit()
+			fulfilled_count += 1
+		except B2BUnavailableError:
+			logger.exception("Retry fulfill failed for order %s", order.id)
+	return fulfilled_count
 
 
 async def get_order_by_id_for_buyer(

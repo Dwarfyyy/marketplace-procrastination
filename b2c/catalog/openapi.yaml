@@ -1,0 +1,584 @@
+openapi: 3.0.3
+info:
+  title: B2C Catalog API
+  description: >
+    OpenAPI-контракт для каталожных эндпоинтов B2C-приложения.
+    Описывает карточку товара (US-CAT-03), блок "Похожие товары" (US-CAT-04)
+    и навигацию по категориям (US-CAT-05): дерево категорий, детали категории
+    и хлебные крошки.
+  version: 0.3.0
+
+servers:
+  - url: /api/v1/catalog
+
+paths:
+  /products/{product_id}:
+    get:
+      summary: Карточка товара
+      description: >
+        Возвращает детализацию товара по `product_id`: название, описание,
+        характеристики, изображения и список SKU с ценой, скидкой и остатком.
+        Видим только товар со статусом MODERATED и `deleted=false` — иначе 404.
+        Внутренние поля продавца (`status`, `cost_price`, `reserved_quantity`)
+        в публичный ответ витрины не попадают.
+      operationId: getCatalogProductCard
+      tags:
+        - catalog
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: UUID товара
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Карточка товара с вложенными SKU
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogProductDetail"
+        "404":
+          description: Товар не найден, заблокирован или помечен удалённым
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Product not found"
+
+  /products/{id}/similar:
+    get:
+      summary: Похожие товары
+      description: >
+        Возвращает до `limit` товаров, похожих на товар `id`: сначала из той
+        же категории, а если их не хватает — дополнительно из родительской
+        категории. Текущий товар исключается из результата. Если похожих
+        товаров нет, возвращается пустой список.
+      operationId: getSimilarProducts
+      tags:
+        - catalog
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: UUID товара, для которого нужны похожие
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: Максимальное количество товаров в ответе
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+      responses:
+        "200":
+          description: Список похожих товаров (может быть пустым)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CatalogProductCard"
+              examples:
+                empty:
+                  summary: Похожих товаров нет
+                  value: []
+        "404":
+          description: Товар с указанным id не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Product with id ... not found"
+
+  /categories/tree:
+    get:
+      summary: Дерево категорий
+      description: >
+        Возвращает массив корневых узлов дерева категорий. Каждый узел
+        содержит `level`, `path` (от корня до узла включительно) и
+        вложенные `children`. Дерево кэшируется.
+      operationId: getCategoriesTree
+      tags:
+        - catalog
+      responses:
+        "200":
+          description: Дерево категорий (массив корневых узлов)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CategoryTreeNode"
+
+  /categories/{category_id}:
+    get:
+      summary: Детали категории
+      description: >
+        Возвращает информацию о категории, включая ссылку на родителя
+        (если есть) и, опционально, количество товаров в категории и её
+        подкатегориях.
+      operationId: getCategoryInfo
+      tags:
+        - catalog
+      parameters:
+        - name: category_id
+          in: path
+          required: true
+          description: UUID категории
+          schema:
+            type: string
+            format: uuid
+        - name: include_product_count
+          in: query
+          required: false
+          description: Включить в ответ количество товаров в категории
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Информация о категории
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CategoryInfoResponse"
+        "400":
+          description: category_id не является валидным UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INVALID_REQUEST
+                message: "id must be a valid UUID"
+        "404":
+          description: Категория с указанным id не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Category with id ... not found"
+
+  /breadcrumbs:
+    servers:
+      - url: /api/v1
+    get:
+      summary: Хлебные крошки
+      description: >
+        Возвращает цепочку категорий от корня до текущей категории.
+        Принимает ровно один из параметров: `category_id` или `product_id`
+        (для товара категория резолвится автоматически).
+      operationId: getBreadcrumbs
+      tags:
+        - catalog
+      parameters:
+        - name: category_id
+          in: query
+          required: false
+          description: UUID категории. Несовместим с product_id.
+          schema:
+            type: string
+            format: uuid
+        - name: product_id
+          in: query
+          required: false
+          description: UUID товара. Несовместим с category_id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Цепочка хлебных крошек от корня до текущей категории
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BreadcrumbResponse"
+        "400":
+          description: >
+            Переданы оба параметра (category_id и product_id) или ни одного
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: INVALID_REQUEST
+                message: "Only one of category_id or product_id should be provided"
+        "404":
+          description: Категория или товар с указанным id не найдены
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Category with id ... not found"
+        "422":
+          description: >
+            Сломанная иерархия категорий — родитель в цепочке не найден
+            (orphan node)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: ORPHAN_NODE
+                message: "Category with id ... has missing parent ..."
+
+components:
+  schemas:
+    ImageRef:
+      type: object
+      required:
+        - id
+        - url
+        - ordering
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        alt:
+          type: string
+          default: ""
+        ordering:
+          type: integer
+          minimum: 0
+        is_main:
+          type: boolean
+          default: false
+
+    CategoryRef:
+      type: object
+      required:
+        - id
+        - name
+        - level
+        - path
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        level:
+          type: integer
+          minimum: 0
+        path:
+          type: array
+          items:
+            type: string
+
+    CatalogProductSeller:
+      type: object
+      required:
+        - id
+        - display_name
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+
+    CatalogProductCard:
+      type: object
+      required:
+        - id
+        - name
+        - min_price
+        - has_stock
+        - images
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        min_price:
+          type: integer
+        old_price:
+          type: integer
+          nullable: true
+        slug:
+          type: string
+          nullable: true
+        category:
+          allOf:
+            - $ref: "#/components/schemas/CategoryRef"
+          nullable: true
+        has_stock:
+          type: boolean
+        rating:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 5
+          nullable: true
+        reviews_count:
+          type: integer
+          minimum: 0
+          default: 0
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageRef"
+        seller:
+          allOf:
+            - $ref: "#/components/schemas/CatalogProductSeller"
+          nullable: true
+
+    Characteristic:
+      type: object
+      required:
+        - id
+        - name
+        - value
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        value:
+          type: string
+
+    CatalogSku:
+      type: object
+      required:
+        - id
+        - name
+        - price
+        - available_quantity
+        - in_stock
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        price:
+          type: integer
+        discount:
+          type: integer
+          default: 0
+        available_quantity:
+          type: integer
+          minimum: 0
+        in_stock:
+          type: boolean
+        characteristics:
+          type: array
+          items:
+            $ref: "#/components/schemas/Characteristic"
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageRef"
+
+    CatalogProductDetail:
+      type: object
+      required:
+        - id
+        - name
+        - slug
+        - min_price
+        - has_stock
+        - images
+        - skus
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        min_price:
+          type: integer
+        has_stock:
+          type: boolean
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageRef"
+        characteristics:
+          type: array
+          items:
+            $ref: "#/components/schemas/Characteristic"
+        skus:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogSku"
+
+    CategoryTreeNode:
+      type: object
+      required:
+        - id
+        - name
+        - level
+        - path
+        - children
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        level:
+          type: integer
+          minimum: 0
+        path:
+          type: array
+          items:
+            type: string
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/CategoryTreeNode"
+
+    CategoryParent:
+      type: object
+      required:
+        - id
+        - name
+        - slug
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+
+    CategoryInfoResponse:
+      type: object
+      required:
+        - id
+        - name
+        - slug
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        parent:
+          allOf:
+            - $ref: "#/components/schemas/CategoryParent"
+          nullable: true
+        product_count:
+          type: integer
+          minimum: 0
+          nullable: true
+        image_url:
+          type: string
+          nullable: true
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    BreadcrumbItem:
+      type: object
+      required:
+        - id
+        - slug
+        - name
+        - url
+        - level
+        - is_current
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+        level:
+          type: integer
+          minimum: 1
+        is_current:
+          type: boolean
+
+    BreadcrumbMeta:
+      type: object
+      required:
+        - resolved_via
+      properties:
+        resolved_via:
+          type: string
+          enum:
+            - CATEGORY
+            - PRODUCT
+        category_id:
+          type: string
+          format: uuid
+          nullable: true
+        product_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    BreadcrumbResponse:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BreadcrumbItem"
+        meta:
+          $ref: "#/components/schemas/BreadcrumbMeta"
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string

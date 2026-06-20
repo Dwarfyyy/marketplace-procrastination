@@ -27,6 +27,9 @@ class CartItem(BaseModel):
 	line_total: int
 	available_quantity: int = Field(ge=0)
 	is_available: bool
+	unavailable_reason: Optional[
+		Literal["PRODUCT_DELETED", "PRODUCT_BLOCKED", "ON_MODERATION", "OUT_OF_STOCK"]
+	] = None
 	image: Optional[ImageRef] = None
 
 

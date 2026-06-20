@@ -10,10 +10,10 @@
 
 Перечень реализованных эндпоинтов:
 
-- `GET /api/v1/products`
-  - **Query/Path params**: `category_id` (обязательный), `search` (опционально, минимум 4 символа после trim), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`)
+- `GET /api/v1/catalog/products`
+  - **Query/Path params**: `category_id` (обязательный), `q` (опционально, минимум 4 символа после trim), `limit` (default `20`), `offset` (default `0`), `filters` (JSON-строка, опционально), `sort` (default `rating`)
   - **Код 200**: `ProductShortListResponse` — список товаров, соответствующих поисковому запросу, с полями `items[]` (id, title, image, price, in_stock, is_in_cart), `total_count`, `limit`, `offset`. Пустой список, если ничего не найдено
-  - **Код 400**: `Search query must be at least 3 characters` (поисковый запрос короче 4 символов после trim)
+  - **Код 400**: `Search query must be at least 4 characters` (поисковый запрос короче 4 символов после trim)
   - **Код 500**: текст ошибки (прочие сбои)
 
 ## Запуск
@@ -32,9 +32,20 @@ make test
 
 - `tests/integration/test_catalog.py::test_search_title_returns_matching_products` — поиск по названию товара возвращает соответствующие результаты
 - `tests/integration/test_catalog.py::test_search_description_returns_matching_products` — поиск по описанию товара возвращает соответствующие результаты
-- `tests/integration/test_catalog.py::test_short_query_returns_400` — короткий поисковый запрос (< 4 символов) возвращает 400
+- `tests/integration/test_catalog.py::test_short_query_is_accepted` — короткий поисковый запрос принимается (openapi не задаёт минимальной длины), возвращает 200
+- `tests/integration/test_catalog.py::test_query_over_max_length_returns_400` — поисковый запрос длиннее 200 символов (maxLength по openapi) возвращает 400
 - `tests/integration/test_catalog.py::test_empty_results_returns_200` — пустой результат поиска возвращает 200 с пустым списком items
 - `tests/integration/test_catalog.py::test_special_chars_do_not_break_query` — специальные символы (`!@#$%^&*()`) в поисковом запросе не ломают SQL-запрос и возвращают корректный ответ
 
 Тесты успешно проходят (см. джобу tests).
+
+## ADR: подход к реализации поиска
+
+Рассмотрены варианты: (1) `ILIKE` по `title`/`description`, (2) `pg_trgm` с триграммным индексом, (3) полнотекстовый поиск через `tsvector`/`SearchVector`.
+
+Выбран **`ILIKE`** с экранированием служебных символов LIKE (`%`, `_`, `/`). Критерии:
+- **Сложность реализации на MVP**: `ILIKE` не требует миграций, новых индексов или расширений БД — минимальные изменения для запуска поиска уже сейчас.
+- **Релевантность результатов**: для каталога с короткими названиями товаров точное вхождение подстроки (`ILIKE`) даёт предсказуемые и понятные покупателю результаты; `pg_trgm`/`tsvector` дают лучшее ранжирование и устойчивость к опечаткам, но это избыточно для MVP и добавляет сложность сопровождения индексов.
+
+`pg_trgm`/полнотекстовый поиск — кандидат для последующей итерации, если потребуется устойчивость к опечаткам и ранжирование по релевантности.
 

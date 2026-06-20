@@ -72,9 +72,13 @@ async def get_products_list(
 	category_id: Optional[uuid.UUID],
 	filter: Optional[dict],
 	sort: str,
-	q: Optional[str],
+	search: Optional[str],
 ) -> Tuple[List[Product], int]:
-	query = select(Product).options(selectinload(Product.images))
+	query = select(Product).options(
+		selectinload(Product.images),
+		selectinload(Product.skus),
+		selectinload(Product.seller),
+	)
 	count_query = select(func.count(func.distinct(Product.id)))
 
 	# Условие видимости: status = MODERATED AND active_quantity > 0
@@ -102,9 +106,9 @@ async def get_products_list(
 				query = query.where(column == value)
 				count_query = count_query.where(column == value)
 
-	if q:
-		search_val = q.strip()
-		if len(search_val) >= 3:
+	if search:
+		search_val = search.strip()
+		if len(search_val) >= 4:
 			escaped_search = (
 				search_val.replace("/", "//").replace("%", "/%").replace("_", "/_")
 			)
@@ -135,14 +139,10 @@ async def get_products_list(
 				else min_price_subquery.c.min_price.desc()
 			)
 			query = query.order_by(sort_column)
-		case "date_desc":
-			query = query.order_by(Product.created_at.desc())
-		case "rating":
-			query = query.order_by(Product.rating.desc())
 		case "popularity":
 			query = query.order_by(Product.popularity.desc())
-		case "discount_desc":
-			query = query.order_by(Product.discount.desc())
+		case "new":
+			query = query.order_by(Product.created_at.desc())
 		case _:
 			query = query.order_by(Product.created_at.desc())
 
@@ -157,7 +157,11 @@ async def get_products_list(
 async def get_product_full(db: AsyncSession, id: uuid.UUID) -> Optional[Product]:
 	stmt = (
 		select(Product)
-		.where(Product.id == id)
+		.where(
+			Product.id == id,
+			Product.status == ProductStatusEnum.MODERATED,
+			Product.deleted == False,  # noqa: E712
+		)
 		.options(
 			selectinload(Product.images),
 			selectinload(Product.characteristics),

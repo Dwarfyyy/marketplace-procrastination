@@ -1,0 +1,718 @@
+openapi: 3.0.3
+info:
+  title: B2C Orders API
+  description: >
+    OpenAPI-контракт для блока "Заказы" B2C-приложения. Описывает оформление
+    заказа (US-ORD-01): идемпотентный checkout с резервом SKU в B2B
+    (all-or-nothing) и фиксацией цен в OrderItem на момент покупки, а также
+    просмотр, отслеживание (US-ORD-02: список с пагинацией/фильтром по
+    статусу и детали с зафиксированными ценами, IDOR-защита через 404) и
+    отмену заказов покупателя.
+  version: 0.1.0
+
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /orders:
+    get:
+      summary: Список заказов покупателя
+      description: >
+        Возвращает заказы текущего покупателя с пагинацией и опциональным
+        фильтром по статусу. `buyer_id` определяется **только** из JWT —
+        результат всегда ограничен заказами текущего покупателя, независимо
+        от значений `limit`/`offset`/`status`. Сортировка — по `created_at`
+        по убыванию (новые сверху).
+      operationId: getOrders
+      tags:
+        - orders
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Размер страницы
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          description: Смещение страницы
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: status
+          in: query
+          required: false
+          description: Фильтр по статусу заказа
+          schema:
+            $ref: "#/components/schemas/OrderStatus"
+      responses:
+        "200":
+          description: Страница заказов покупателя
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedOrders"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+    post:
+      summary: Оформить заказ (checkout)
+      description: >
+        Создаёт заказ из текущей корзины покупателя: проверяет адрес и способ
+        оплаты, валидирует корзину (`POST /cart/validate`), резервирует все
+        SKU корзины в B2B по принципу all-or-nothing и фиксирует цены в
+        `OrderItem` на момент покупки. Оплата — мок: статус сразу `PAID`.
+
+        Идемпотентность по обязательному заголовку `Idempotency-Key` (UUID):
+        повторный запрос с тем же ключом и тем же телом возвращает уже
+        созданный заказ без повторного резерва; тот же ключ с другим телом —
+        `409 IDEMPOTENCY_CONFLICT`.
+
+        `buyer_id` определяется **только** из JWT (claims проверенного
+        access-токена), любой `buyer_id` в теле запроса не принимается.
+      operationId: checkout
+      tags:
+        - orders
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: UUID v4, генерируется клиентом один раз на попытку оформления
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderCreateRequest"
+      responses:
+        "201":
+          description: >
+            Заказ создан (или, при повторе с тем же `Idempotency-Key` и тем же
+            телом, возвращён уже существующий заказ)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "400":
+          description: Невалидный `Idempotency-Key` или пустая корзина
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                badIdempotencyKey:
+                  value:
+                    code: BAD_REQUEST
+                    message: "Idempotency-Key must be a valid UUID"
+                emptyCart:
+                  value:
+                    code: BAD_REQUEST
+                    message: "Cart is empty"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Missing or invalid Authorization header"
+        "404":
+          description: Адрес или способ оплаты не найдены / не принадлежат покупателю
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                addressNotFound:
+                  value:
+                    code: NOT_FOUND
+                    message: "Address not found"
+                paymentMethodNotFound:
+                  value:
+                    code: NOT_FOUND
+                    message: "Payment method not found"
+        "409":
+          description: >
+            Конфликт идемпотентности (тот же ключ, другое тело) либо хотя бы
+            один SKU корзины не зарезервирован — весь заказ откатывается
+            (all-or-nothing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                idempotencyConflict:
+                  value:
+                    code: IDEMPOTENCY_CONFLICT
+                    message: "Idempotency key already used with different request body"
+                reserveFailed:
+                  value:
+                    code: RESERVE_FAILED
+                    message: "Partial reserve failed"
+                    details:
+                      - sku_id: "11111111-1111-1111-1111-111111111111"
+                        requested: 2
+                        available: 0
+                        reason: "OUT_OF_STOCK"
+        "422":
+          description: >
+            Корзина не прошла валидацию (`cart/validate.is_valid = false`) —
+            изменилась цена/остаток/доступность позиции, либо не совпадает
+            переданный `items_snapshot`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: VALIDATION_ERROR
+                message: "Cart validation failed"
+                details:
+                  is_valid: false
+                  cart: {}
+                  issues: []
+        "503":
+          description: >
+            Каталог ("B2B") недоступен на шаге резерва SKU — заказ не создан,
+            резерв не применён
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: B2B_UNAVAILABLE
+                message: "Catalog service is unavailable"
+
+  /orders/{order_id}:
+    get:
+      summary: Получить заказ по id
+      description: Возвращает полную информацию о заказе текущего покупателя.
+      operationId: getOrder
+      tags:
+        - orders
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          description: UUID заказа
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Заказ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Заказ не найден или принадлежит другому покупателю
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Order not found"
+
+  /b2b/events:
+    post:
+      summary: Событие об изменении товара от B2B
+      description: >
+        Принимает события о товарах от B2B (`PRODUCT_BLOCKED`,
+        `PRODUCT_DELETED`, `SKU_OUT_OF_STOCK`) и обновляет
+        `unavailable_reason` у позиций корзин (`cart.items`) с указанными
+        `sku_id`. Заказы (`orders`) не затрагиваются — цены и состав уже
+        оформленных заказов зафиксированы (см. checkout).
+
+        Идемпотентность по `idempotency_key` события: повторный вызов с тем
+        же ключом (например, retry от B2B после таймаута) возвращает
+        `processed: false` без побочных эффектов.
+
+        Эндпоинт защищён заголовком `X-Service-Key` (service-to-service,
+        как `POST /api/v1/events/moderation` в B2B) — без него или с неверным
+        ключом `401 UNAUTHORIZED`.
+      operationId: receiveProductEvent
+      tags:
+        - events
+      security:
+        - serviceKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductEventRequest"
+      responses:
+        "200":
+          description: >
+            Событие обработано (или повторный вызов с тем же
+            `idempotency_key` — без побочных эффектов)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductEventResponse"
+        "401":
+          description: Отсутствует или неверен `X-Service-Key`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Invalid or missing service key"
+
+  /orders/{order_id}/cancel:
+    post:
+      summary: Отменить заказ
+      description: >
+        Отменяет заказ покупателя. Разрешено только для статусов `CREATED` и
+        `PAID`.
+      operationId: cancelOrder
+      tags:
+        - orders
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          description: UUID заказа
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderCancelRequest"
+      responses:
+        "200":
+          description: Отменённый заказ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Заказ не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Order not found"
+        "409":
+          description: Заказ в статусе, из которого отмена невозможна
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: CANCEL_NOT_ALLOWED
+                message: "Can't cancel order in this state"
+
+  /events/order-delivered:
+    post:
+      summary: Событие "заказ доставлен" — финальное списание резерва
+      description: >
+        Вызывается службой доставки/логистики при переходе заказа в
+        `DELIVERED`. Переводит заказ в `DELIVERED` (если ещё не в этом
+        статусе) и выполняет `fulfill` в "B2B": списывает
+        `reserved_quantity` по каждому `OrderItem` заказа
+        (`reserved_quantity = max(0, reserved_quantity - quantity)`),
+        `active_quantity` не меняется — товар физически выдан покупателю и
+        не возвращается на склад.
+
+        Идемпотентность: повторный вызов с тем же `order_id` для уже
+        выполненного `fulfill` (`orders.fulfilled_at` заполнен) возвращает
+        `200` без повторного списания.
+
+        Если списание резерва падает (`SQLAlchemyError`) — заказ остаётся
+        `DELIVERED`, `fulfilled_at` не заполняется, ошибка логируется;
+        повторная попытка выполняется асинхронным ретраем (см.
+        [flows/b2c-orders-flows.md#b2c-13-fulfill](../../flows/b2c-orders-flows.md#b2c-13-fulfill)).
+        Откат в предыдущий статус не выполняется — товар уже у покупателя.
+
+        Эндпоинт защищён заголовком `X-Service-Key`, как
+        `POST /api/v1/b2b/events`.
+      operationId: receiveOrderDeliveredEvent
+      tags:
+        - events
+      security:
+        - serviceKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderDeliveredEventRequest"
+      responses:
+        "200":
+          description: >
+            Заказ переведён в `DELIVERED` и/или резерв списан (или повторный
+            вызов для уже выполненного fulfill — без изменений)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          description: Отсутствует или неверен `X-Service-Key`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: UNAUTHORIZED
+                message: "Invalid or missing service key"
+        "404":
+          description: Заказ не найден
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Order not found"
+        "409":
+          description: Заказ отменён — доставка невозможна
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: DELIVER_NOT_ALLOWED
+                message: "Can't deliver a cancelled order"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        buyer_id извлекается из claims токена middleware'ом после проверки
+        подписи и активной сессии. buyer_id из тела запроса не используется —
+        защита от IDOR.
+    serviceKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+      description: >
+        Service-to-service ключ для вызовов от B2B (например, доставки
+        событий о товарах). Не связан с покупательской аутентификацией.
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          description: Доп. данные об ошибке (структура зависит от `code`)
+
+    OrderStatus:
+      type: string
+      enum:
+        - CREATED
+        - PAID
+        - ASSEMBLING
+        - DELIVERING
+        - DELIVERED
+        - CANCELLED
+        - CANCEL_PENDING
+
+    OrderItemSnapshot:
+      type: object
+      description: >
+        Снимок состава корзины на момент показа итогов checkout — опциональная
+        защита от гонки "цена/состав изменились между показом итогов и
+        нажатием кнопки". Если не совпадает с текущей корзиной — `422`, как и
+        при обычной невалидной корзине.
+      required:
+        - sku_id
+        - quantity
+        - unit_price
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          type: integer
+          minimum: 0
+
+    OrderCreateRequest:
+      type: object
+      required:
+        - address_id
+        - payment_method_id
+      properties:
+        address_id:
+          type: string
+          format: uuid
+        payment_method_id:
+          type: string
+          format: uuid
+        comment:
+          type: string
+          maxLength: 1000
+          nullable: true
+        items_snapshot:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/OrderItemSnapshot"
+
+    OrderCancelRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          nullable: true
+
+    OrderDeliveredEventRequest:
+      type: object
+      required:
+        - order_id
+      properties:
+        order_id:
+          type: string
+          format: uuid
+
+    OrderItem:
+      type: object
+      description: >
+        Историческй снимок позиции заказа: `unit_price`, `name` (= `product_title`)
+        и `sku_code` (= `sku_name`) фиксируются на момент checkout и не
+        пересчитываются из каталога — даже если продавец позже изменит цену
+        или название товара.
+      required:
+        - sku_id
+        - product_id
+        - name
+        - quantity
+        - unit_price
+        - line_total
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Снимок `product.title` на момент checkout
+        sku_code:
+          type: string
+          nullable: true
+          description: Снимок `sku.name` на момент checkout
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          type: integer
+          minimum: 0
+          description: Цена SKU, зафиксированная на момент checkout (копейки)
+        line_total:
+          type: integer
+          minimum: 0
+          description: "`unit_price * quantity`"
+        image_url:
+          type: string
+          nullable: true
+
+    OrderResponse:
+      type: object
+      required:
+        - id
+        - buyer_id
+        - status
+        - items
+        - subtotal
+        - total
+        - address
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          nullable: true
+          description: "Человекочитаемый номер заказа, напр. NM-2026-000123"
+        buyer_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        status_history:
+          type: array
+          nullable: true
+          items:
+            type: object
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        subtotal:
+          type: integer
+          minimum: 0
+          description: Сумма `line_total` всех позиций (копейки)
+        delivery_cost:
+          type: integer
+          minimum: 0
+          default: 0
+        total:
+          type: integer
+          minimum: 0
+          description: "subtotal + delivery_cost"
+        address:
+          type: object
+          description: Адрес доставки на момент оформления заказа
+        payment_method:
+          type: object
+          nullable: true
+        comment:
+          type: string
+          nullable: true
+        cancel_reason:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        delivered_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ProductEventPayload:
+      type: object
+      required:
+        - product_id
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        sku_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        sku_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Альтернатива `sku_ids` для событий с одним SKU (напр.
+            `SKU_OUT_OF_STOCK`)
+        hard_block:
+          type: boolean
+          default: false
+
+    ProductEventRequest:
+      type: object
+      required:
+        - event_type
+        - idempotency_key
+        - occurred_at
+        - payload
+      properties:
+        event_type:
+          type: string
+          enum:
+            - PRODUCT_BLOCKED
+            - PRODUCT_DELETED
+            - SKU_OUT_OF_STOCK
+        idempotency_key:
+          type: string
+          format: uuid
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          $ref: "#/components/schemas/ProductEventPayload"
+
+    ProductEventResponse:
+      type: object
+      required:
+        - idempotency_key
+        - processed
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+        processed:
+          type: boolean
+          description: >
+            `false`, если событие с этим `idempotency_key` уже было
+            обработано ранее (повтор без побочных эффектов)
+        updated_count:
+          type: integer
+          minimum: 0
+          description: Количество обновлённых строк `cart.items`
+
+    PaginatedOrders:
+      type: object
+      required:
+        - items
+        - total_count
+        - limit
+        - offset
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderResponse"
+        total_count:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        offset:
+          type: integer
+          minimum: 0

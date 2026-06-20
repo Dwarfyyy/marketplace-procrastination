@@ -36,6 +36,10 @@ class OrderCancelRequest(BaseModel):
 	reason: str | None = Field(default=None, max_length=500)
 
 
+class OrderDeliveredEventRequest(BaseModel):
+	order_id: uuid.UUID
+
+
 class OrderItem(BaseModel):
 	sku_id: uuid.UUID
 	product_id: uuid.UUID
