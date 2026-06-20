@@ -48,9 +48,14 @@ def _headers(moderator_id: uuid.UUID) -> dict[str, str]:
 
 def _decline_body(reason_id: uuid.UUID) -> dict:
 	return {
-		"blocking_reason_id": str(reason_id),
-		"moderator_comment": "Confirmed counterfeit product",
-		"field_reports": [],
+		"blocking_reason_ids": [str(reason_id)],
+		"comment": "Confirmed counterfeit product",
+		"field_reports": [
+			{
+				"field_path": "description",
+				"message": "Description does not match product",
+			}
+		],
 	}
 
 
@@ -62,11 +67,27 @@ async def _hard_block(
 	card = await _card(db, moderator_id=moderator_id)
 	reason = await _hard_reason(db)
 	response = await client.post(
-		f"/api/v1/products/{card.product_id}/decline",
+		f"/api/v1/tickets/{card.id}/block",
 		headers=_headers(moderator_id),
 		json=_decline_body(reason.id),
 	)
 	assert response.status_code == 200
+	body = response.json()
+	assert body["id"] == str(card.id)
+	assert body["product_id"] == str(card.product_id)
+	assert body["seller_id"] == str(card.seller_id)
+	assert body["kind"] == "PRODUCT"
+	assert body["status"] == "HARD_BLOCKED"
+	assert body["queue_priority"] == card.queue_priority
+	assert set(body) == {
+		"id",
+		"product_id",
+		"seller_id",
+		"kind",
+		"status",
+		"queue_priority",
+		"created_at",
+	}
 	await db.refresh(card)
 	return card, reason, moderator_id
 
@@ -81,6 +102,12 @@ async def test_hard_block_transitions_to_terminal_and_emits_event(
 	assert card.status == ModerationStatus.HARD_BLOCKED
 	assert card.blocking_reason_id == reason.id
 	assert card.date_moderation is not None
+	assert card.field_reports == [
+		{
+			"field_path": "description",
+			"message": "Description does not match product",
+		}
+	]
 	result = await db.execute(select(OutboxEvent))
 	event = result.scalar_one()
 	assert event.event_type == "BLOCKED"
@@ -99,6 +126,12 @@ async def test_hard_block_event_carries_hard_block_true(
 	assert event.payload["hard_block"] is True
 	assert event.payload["blocking_reason_id"] == str(reason.id)
 	assert event.payload["blocking_reason_title"] == reason.title
+	assert event.payload["field_reports"] == [
+		{
+			"field_name": "description",
+			"comment": "Description does not match product",
+		}
+	]
 	assert event.payload["idempotency_key"] == str(event.idempotency_key)
 
 
@@ -109,12 +142,12 @@ async def test_any_modify_on_hard_blocked_returns_403(
 	card, reason, moderator_id = await _hard_block(client, db)
 
 	approve_response = await client.post(
-		f"/api/v1/products/{card.product_id}/approve",
+		f"/api/v1/tickets/{card.id}/approve",
 		headers=_headers(moderator_id),
 		json={},
 	)
 	decline_response = await client.post(
-		f"/api/v1/products/{card.product_id}/decline",
+		f"/api/v1/tickets/{card.id}/block",
 		headers=_headers(moderator_id),
 		json=_decline_body(reason.id),
 	)

@@ -25,7 +25,7 @@ async def _card(
 		queue_priority=1,
 		moderator_id=moderator_id or uuid.uuid4(),
 		json_after={"skus": [{"id": str(uuid.uuid4())}] if skus is None else skus},
-		field_reports=[{"field_name": "title", "comment": "Old report"}],
+		field_reports=[{"field_path": "title", "message": "Old report"}],
 	)
 	db.add(card)
 	await db.commit()
@@ -43,15 +43,27 @@ async def test_approve_transitions_to_moderated_and_emits_event(
 	card = await _card(db, moderator_id=moderator_id)
 
 	response = await client.post(
-		f"/api/v1/products/{card.product_id}/approve",
+		f"/api/v1/tickets/{card.id}/approve",
 		headers=_headers(moderator_id),
-		json={"moderator_comment": "Looks good"},
+		json={"comment": "Looks good"},
 	)
 
 	assert response.status_code == 200
-	assert response.json() == {
-		"product_id": str(card.product_id),
-		"status": "MODERATED",
+	body = response.json()
+	assert body["id"] == str(card.id)
+	assert body["product_id"] == str(card.product_id)
+	assert body["seller_id"] == str(card.seller_id)
+	assert body["kind"] == "PRODUCT"
+	assert body["status"] == "APPROVED"
+	assert body["queue_priority"] == card.queue_priority
+	assert set(body) == {
+		"id",
+		"product_id",
+		"seller_id",
+		"kind",
+		"status",
+		"queue_priority",
+		"created_at",
 	}
 	await db.refresh(card)
 	assert card.status == ModerationStatus.MODERATED
@@ -72,7 +84,7 @@ async def test_approve_others_card_returns_403(
 	card = await _card(db, moderator_id=uuid.uuid4())
 
 	response = await client.post(
-		f"/api/v1/products/{card.product_id}/approve",
+		f"/api/v1/tickets/{card.id}/approve",
 		headers=_headers(uuid.uuid4()),
 		json={},
 	)
@@ -100,7 +112,7 @@ async def test_approve_after_edited_returns_409(
 	)
 
 	response = await client.post(
-		f"/api/v1/products/{card.product_id}/approve",
+		f"/api/v1/tickets/{card.id}/approve",
 		headers=_headers(moderator_id),
 		json={},
 	)
@@ -117,7 +129,7 @@ async def test_approve_without_sku_returns_409(
 	card = await _card(db, moderator_id=moderator_id, skus=[])
 
 	response = await client.post(
-		f"/api/v1/products/{card.product_id}/approve",
+		f"/api/v1/tickets/{card.id}/approve",
 		headers=_headers(moderator_id),
 		json={},
 	)

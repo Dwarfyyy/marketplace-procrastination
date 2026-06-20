@@ -1,15 +1,16 @@
 ## US-MOD-03: approve product
 
-`POST /api/v1/products/{product_id}/approve` moves an assigned moderation card
-from `IN_REVIEW` to `MODERATED`. The current moderator is supplied through the
+`POST /api/v1/tickets/{ticket_id}/approve` moves an assigned moderation ticket
+from `IN_REVIEW` to `MODERATED` internally and returns ticket status `APPROVED`.
+The current moderator is supplied through the
 `X-Moderator-ID` header until the shared identity contract is available.
 
 The decision and a `MODERATED` event are committed in one database transaction.
 The background outbox worker retries delivery to B2B and reuses the same
 `idempotency_key`, so B2B can safely ignore duplicate attempts.
 
-`POST /api/v1/products/{product_id}/decline` uses the selected blocking
-reason's `hard_block` flag. Hard reasons move the card to terminal
+`POST /api/v1/tickets/{ticket_id}/block` uses the selected blocking
+reason IDs and their `hard_block` flags. Hard reasons move the card to terminal
 `HARD_BLOCKED` and emit `BLOCKED` with `hard_block=true`; subsequent moderator
 mutations and seller `EDITED` events cannot move the card out of that state.
 
