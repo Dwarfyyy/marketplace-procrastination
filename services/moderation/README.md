@@ -1,3 +1,18 @@
+# Moderation Service
+
+Сервис модерации товаров NeoMarket.
+
+## US-MOD-01: приём событий о товаре от B2B
+
+`POST /api/v1/b2b/events` — service-to-service эндпоинт (заголовок
+`X-Service-Key`), принимает события `PRODUCT_CREATED` / `PRODUCT_EDITED` /
+`PRODUCT_DELETED` от B2B и обновляет карточку товара в очереди модерации
+(`moderation.cards`).
+
+Канон-flow: [flows/moderation-flows.md#receive-product-events](../../flows/moderation-flows.md#receive-product-events).
+OpenAPI: [moderation/openapi.yaml](../../moderation/openapi.yaml).
+Подробности реализации и ADR: [docs/US-MOD-01.md](docs/US-MOD-01.md).
+
 ## US-MOD-03: approve product
 
 `POST /api/v1/tickets/{ticket_id}/approve` moves an assigned moderation ticket
@@ -14,18 +29,18 @@ reason IDs and their `hard_block` flags. Hard reasons move the card to terminal
 `HARD_BLOCKED` and emit `BLOCKED` with `hard_block=true`; subsequent moderator
 mutations and seller `EDITED` events cannot move the card out of that state.
 
-### ADR
+## Запуск
 
-Synchronous POST is simple but either loses the event after a local commit or
-keeps the moderator waiting while B2B is unavailable. A shared event bus would
-also be reliable, but adds infrastructure and contract work to the currently
-small Moderation service. This implementation uses a transactional outbox:
-it gives reliable retries and a fast approve response while matching the
-idempotent B2B moderation endpoint already present in this repository.
+```powershell
+cp .env.example .env
+docker-compose up -d
+docker-compose exec moderation-backend uv run alembic -c /app/database/alembic.ini upgrade head
+```
 
-For terminal-state protection, the service uses an enum status plus a shared
-guard called by every mutating card endpoint. A separate `is_terminal` flag
-would duplicate state and could drift, while moving records to an archive table
-would complicate lookup and deletion events. The shared guard keeps normal-flow
-auditing straightforward and still permits an explicit, audited admin data-fix
-outside the public API.
+## Тесты
+
+```powershell
+make test
+```
+
+Требует Docker (используется `testcontainers.PostgresContainer`).

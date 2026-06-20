@@ -6,10 +6,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from api.events import router as events_router
 from api.products import router as products_router
 from core.config import settings
 from core.db import engine
 from database.models import Base
+from middlewares.service_key_verification import verify_service_key
 from services import outbox
 
 
@@ -56,6 +58,8 @@ async def validation_exception_handler(
 	)
 
 
+app.middleware("http")(verify_service_key)
+app.include_router(events_router, prefix="/api/v1")
 app.include_router(products_router, prefix="/api/v1")
 
 

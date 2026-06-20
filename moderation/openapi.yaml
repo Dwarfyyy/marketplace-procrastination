@@ -13,7 +13,7 @@ servers:
   - url: /api/v1
 
 paths:
-  /events/product:
+  /b2b/events:
     post:
       summary: Событие об изменении товара от B2B
       description: >
@@ -23,22 +23,22 @@ paths:
 
         - `PRODUCT_CREATED` создаёт карточку в `PENDING`.
         - `PRODUCT_EDITED` для карточки в `PENDING`/`IN_REVIEW` обновляет
-          снимок на месте; для `MODERATED`/`BLOCKED`/`ARCHIVED` возвращает
+          `json_after` на месте; для `MODERATED`/`BLOCKED`/`ARCHIVED` возвращает
           карточку в `PENDING` и сохраняет предыдущий снимок в `json_before`;
           для `HARD_BLOCKED` не меняет карточку.
         - `PRODUCT_DELETED` переводит карточку в `ARCHIVED` (уходит из
           очереди).
 
         Идемпотентность по `idempotency_key` события (генерируется B2B):
-        повторный вызов с тем же ключом возвращает `processed: false` без
+        повторный вызов с тем же ключом возвращает `409 DUPLICATE_EVENT` без
         побочных эффектов.
 
         Эндпоинт защищён заголовком `X-Service-Key` (service-to-service, как
-        `POST /api/v1/events/moderation` в B2B) — без него или с неверным
+        `POST /api/v1/b2b/events` в B2B) — без него или с неверным
         ключом `401 UNAUTHORIZED`.
       operationId: receiveProductEvent
       tags:
-        - events
+        - b2b-events
       security:
         - serviceKeyAuth: []
       requestBody:
@@ -48,10 +48,8 @@ paths:
             schema:
               $ref: "#/components/schemas/ProductEventRequest"
       responses:
-        "200":
-          description: >
-            Событие обработано (или повторный вызов с тем же
-            `idempotency_key` — без побочных эффектов)
+        "202":
+          description: Событие принято и обработано
           content:
             application/json:
               schema:
@@ -65,6 +63,15 @@ paths:
               example:
                 code: UNAUTHORIZED
                 message: "Invalid or missing service key"
+        "409":
+          description: Событие с этим `idempotency_key` уже было обработано
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: DUPLICATE_EVENT
+                message: "Event with this idempotency_key has already been processed"
         "422":
           description: Невалидное тело запроса
           content:
@@ -114,6 +121,7 @@ components:
       required:
         - product_id
         - seller_id
+        - json_after
       properties:
         product_id:
           type: string
@@ -121,7 +129,13 @@ components:
         seller_id:
           type: string
           format: uuid
-        snapshot:
+        json_before:
+          type: object
+          nullable: true
+          description: >
+            Предыдущий снимок товара (опционально, только для `PRODUCT_EDITED`).
+          additionalProperties: true
+        json_after:
           type: object
           description: >
             Текущий слепок полей товара от B2B (title, description,
@@ -164,9 +178,7 @@ components:
           format: uuid
         processed:
           type: boolean
-          description: >
-            `false`, если событие с этим `idempotency_key` уже было
-            обработано ранее (повтор без побочных эффектов)
+          description: "`true` — событие успешно обработано."
         card_id:
           type: string
           format: uuid
