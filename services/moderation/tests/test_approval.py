@@ -53,7 +53,7 @@ async def test_approve_transitions_to_moderated_and_emits_event(
 	assert body["id"] == str(card.id)
 	assert body["product_id"] == str(card.product_id)
 	assert body["seller_id"] == str(card.seller_id)
-	assert body["kind"] == "PRODUCT"
+	assert body["kind"] in ("CREATE", "EDIT")
 	assert body["status"] == "APPROVED"
 	assert body["queue_priority"] == card.queue_priority
 	assert set(body) == {

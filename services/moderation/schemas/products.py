@@ -21,13 +21,14 @@ class DeclineRequest(BaseModel):
 
 
 TicketStatus = Literal["PENDING", "IN_REVIEW", "APPROVED", "BLOCKED", "HARD_BLOCKED"]
+TicketKind = Literal["CREATE", "EDIT"]
 
 
 class TicketResponse(BaseModel):
 	id: UUID
 	product_id: UUID
 	seller_id: UUID
-	kind: Literal["PRODUCT"] = "PRODUCT"
+	kind: TicketKind
 	status: TicketStatus
 	queue_priority: int
 	created_at: datetime

@@ -25,6 +25,7 @@ def _ticket_response(card: ProductModeration) -> TicketResponse:
 		id=card.id,
 		product_id=card.product_id,
 		seller_id=card.seller_id,
+		kind=card.kind.value,
 		status=_ticket_status(card.status),
 		queue_priority=card.queue_priority,
 		created_at=card.date_created,
