@@ -18,6 +18,11 @@ class ModerationStatus(str, enum.Enum):
 	HARD_BLOCKED = "HARD_BLOCKED"
 
 
+class TicketKind(str, enum.Enum):
+	CREATE = "CREATE"
+	EDIT = "EDIT"
+
+
 class OutboxStatus(str, enum.Enum):
 	PENDING = "PENDING"
 	SENT = "SENT"
@@ -29,6 +34,7 @@ class ProductModeration(Base):
 	id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
 	product_id: Mapped[uuid.UUID] = mapped_column(Uuid, unique=True, index=True)
 	seller_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+	kind: Mapped[TicketKind] = mapped_column(Enum(TicketKind), default=TicketKind.CREATE)
 	status: Mapped[ModerationStatus] = mapped_column(
 		Enum(ModerationStatus), default=ModerationStatus.PENDING
 	)

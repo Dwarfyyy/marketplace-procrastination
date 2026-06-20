@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+TicketKind = Literal["CREATE", "EDIT"]
+
 
 class ApproveRequest(BaseModel):
 	comment: str | None = Field(default=None, max_length=1000)
@@ -27,7 +29,7 @@ class TicketResponse(BaseModel):
 	id: UUID
 	product_id: UUID
 	seller_id: UUID
-	kind: Literal["PRODUCT"] = "PRODUCT"
+	kind: TicketKind
 	status: TicketStatus
 	queue_priority: int
 	created_at: datetime

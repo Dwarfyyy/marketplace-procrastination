@@ -3,7 +3,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import ModerationStatus, ProductModeration
+from database.models import ModerationStatus, ProductModeration, TicketKind
 
 
 def strip_private_fields(product_data: dict) -> dict:
@@ -43,9 +43,11 @@ async def apply_product_event(db: AsyncSession, event: dict) -> None:
 	json_after = strip_private_fields(payload["json_after"])
 	seller_id = UUID(payload["seller_id"])
 	if card is None:
+		kind = TicketKind.CREATE if event_type == "PRODUCT_CREATED" else TicketKind.EDIT
 		card = ProductModeration(
 			product_id=product_id,
 			seller_id=seller_id,
+			kind=kind,
 			status=ModerationStatus.PENDING,
 			queue_priority=1,
 			json_after=json_after,
@@ -57,6 +59,7 @@ async def apply_product_event(db: AsyncSession, event: dict) -> None:
 		old_status = card.status
 		card.json_before = card.json_after
 		card.json_after = json_after
+		card.kind = TicketKind.EDIT
 		card.status = ModerationStatus.PENDING
 		card.moderator_id = None
 		card.queue_priority = 2 if old_status == ModerationStatus.BLOCKED else 3
