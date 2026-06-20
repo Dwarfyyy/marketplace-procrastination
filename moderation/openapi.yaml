@@ -82,6 +82,85 @@ paths:
                 code: VALIDATION_ERROR
                 message: "Request validation failed"
 
+  /tickets/{ticket_id}/approve:
+    post:
+      summary: Одобрить карточку товара (US-MOD-03)
+      description: >
+        Модератор одобряет карточку, закреплённую за ним. Переводит её из
+        `IN_REVIEW` в `APPROVED`. В той же транзакции записывает в outbox
+        событие `MODERATED`, которое доставляется в B2B через outbox-worker
+        (US-B2B-09).
+
+        Предусловия:
+        - Карточка находится в статусе `IN_REVIEW`.
+        - Карточка закреплена за вызывающим модератором (`moderator_id`).
+        - Карточка имеет хотя бы один SKU.
+
+        Идемпотентность: `idempotency_key` события MODERATED генерируется
+        при первом approve; повторная доставка outbox-worker не создаёт
+        второго события (уникальный ключ в outbox).
+      operationId: approveTicket
+      tags:
+        - tickets
+      security:
+        - moderatorAuth: []
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Идентификатор карточки модерации (ticket.id)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveRequest"
+      responses:
+        "200":
+          description: Карточка одобрена, событие MODERATED записано в outbox
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TicketResponse"
+        "403":
+          description: Карточка закреплена за другим модератором
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: FORBIDDEN
+                message: "This moderation card is not assigned to you"
+        "404":
+          description: Карточка не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Ticket not found in moderation queue"
+        "409":
+          description: >
+            Конфликт состояния: карточка не в `IN_REVIEW` (например, продавец
+            отредактировал товар — статус сброшен в `PENDING`) или нет SKU.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                not_in_review:
+                  value:
+                    code: CONFLICT
+                    message: "Product is not in review status"
+                no_skus:
+                  value:
+                    code: CONFLICT
+                    message: "Product has no SKUs, cannot approve"
+
 components:
   securitySchemes:
     serviceKeyAuth:
@@ -91,6 +170,13 @@ components:
       description: >
         Service-to-service ключ для вызовов от B2B. Не связан с
         аутентификацией пользователей (JWT).
+    moderatorAuth:
+      type: apiKey
+      in: header
+      name: X-Moderator-ID
+      description: >
+        Идентификатор модератора (UUID). Используется для проверки закрепления
+        карточки. В production заменяется bearerAuth (JWT).
 
   schemas:
     ErrorResponse:
@@ -166,6 +252,105 @@ components:
           format: date-time
         payload:
           $ref: "#/components/schemas/ProductEventPayload"
+
+    ApproveRequest:
+      type: object
+      properties:
+        comment:
+          type: string
+          nullable: true
+          maxLength: 1000
+          description: Необязательный комментарий модератора к решению
+
+    TicketKind:
+      type: string
+      enum:
+        - CREATE
+        - EDIT
+      description: >
+        Тип события, породившего карточку: `CREATE` — первичная публикация,
+        `EDIT` — правка существующего товара.
+
+    TicketStatus:
+      type: string
+      enum:
+        - PENDING
+        - IN_REVIEW
+        - APPROVED
+        - BLOCKED
+        - HARD_BLOCKED
+
+    TicketResponse:
+      type: object
+      required:
+        - id
+        - product_id
+        - seller_id
+        - kind
+        - status
+        - queue_priority
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Идентификатор карточки модерации (ticket_id)
+        product_id:
+          type: string
+          format: uuid
+        seller_id:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/TicketKind"
+        status:
+          $ref: "#/components/schemas/TicketStatus"
+        queue_priority:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    ModerationEventPayload:
+      type: object
+      required:
+        - idempotency_key
+        - product_id
+        - event_type
+        - hard_block
+        - field_reports
+        - occurred_at
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+          description: UUID, генерируемый при approve; гарантирует идемпотентность в B2B
+        product_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum:
+            - MODERATED
+            - BLOCKED
+            - HARD_BLOCKED
+        hard_block:
+          type: boolean
+        field_reports:
+          type: array
+          items:
+            type: object
+            required:
+              - field_path
+              - message
+            properties:
+              field_path:
+                type: string
+              message:
+                type: string
+        occurred_at:
+          type: string
+          format: date-time
 
     ProductEventResponse:
       type: object
