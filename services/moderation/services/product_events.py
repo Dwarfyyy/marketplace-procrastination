@@ -42,8 +42,8 @@ async def apply_product_event(db: AsyncSession, event: dict) -> None:
 
 	json_after = strip_private_fields(payload["json_after"])
 	seller_id = UUID(payload["seller_id"])
+	kind = TicketKind.CREATE if event_type == "PRODUCT_CREATED" else TicketKind.EDIT
 	if card is None:
-		kind = TicketKind.CREATE if event_type == "PRODUCT_CREATED" else TicketKind.EDIT
 		card = ProductModeration(
 			product_id=product_id,
 			seller_id=seller_id,
@@ -59,7 +59,8 @@ async def apply_product_event(db: AsyncSession, event: dict) -> None:
 		old_status = card.status
 		card.json_before = card.json_after
 		card.json_after = json_after
-		card.kind = TicketKind.EDIT
+		if old_status not in {ModerationStatus.PENDING, ModerationStatus.IN_REVIEW}:
+			card.kind = TicketKind.EDIT
 		card.status = ModerationStatus.PENDING
 		card.moderator_id = None
 		card.queue_priority = 2 if old_status == ModerationStatus.BLOCKED else 3
