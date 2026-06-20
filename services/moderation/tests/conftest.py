@@ -41,6 +41,12 @@ async def db(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator
 
 
 @pytest.fixture()
+async def db_session(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
+	async with session_factory() as session:
+		yield session
+
+
+@pytest.fixture()
 def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
 	async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
 		async with session_factory() as session:
