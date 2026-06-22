@@ -12,7 +12,7 @@ from services import order_service, product_event_service
 router = APIRouter(prefix="/api/v1", tags=["Events"])
 
 
-@router.post("/b2b/events", response_model=ProductEventResponse)
+@router.post("/b2b/events", response_model=ProductEventResponse, status_code=202)
 async def receive_product_event(
 	request: ProductEventRequest,
 	db: Annotated[AsyncSession, Depends(get_db)],

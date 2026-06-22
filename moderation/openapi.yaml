@@ -6,8 +6,9 @@ info:
     B2B (US-MOD-01): идемпотентный приём `PRODUCT_CREATED` / `PRODUCT_EDITED`
     / `PRODUCT_DELETED` и переходы карточки модерации между статусами
     `PENDING` / `IN_REVIEW` / `MODERATED` / `BLOCKED` / `HARD_BLOCKED` /
-    `ARCHIVED`.
-  version: 0.1.0
+    `ARCHIVED`. Действия модератора: одобрение (US-MOD-03) и жёсткая
+    блокировка (US-MOD-05).
+  version: 0.2.0
 
 servers:
   - url: /api/v1
@@ -82,6 +83,171 @@ paths:
                 code: VALIDATION_ERROR
                 message: "Request validation failed"
 
+  /tickets/{ticket_id}/approve:
+    post:
+      summary: Одобрить карточку товара (US-MOD-03)
+      description: >
+        Модератор одобряет карточку, закреплённую за ним. Переводит её из
+        `IN_REVIEW` в `APPROVED`. В той же транзакции записывает в outbox
+        событие `MODERATED`, которое доставляется в B2B через outbox-worker
+        (US-B2B-09).
+
+        Предусловия:
+        - Карточка находится в статусе `IN_REVIEW`.
+        - Карточка закреплена за вызывающим модератором (`moderator_id`).
+        - Карточка имеет хотя бы один SKU.
+
+        Идемпотентность: `idempotency_key` события MODERATED генерируется
+        при первом approve; повторная доставка outbox-worker не создаёт
+        второго события (уникальный ключ в outbox).
+      operationId: approveTicket
+      tags:
+        - tickets
+      security:
+        - moderatorAuth: []
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Идентификатор карточки модерации (ticket.id)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveRequest"
+      responses:
+        "200":
+          description: Карточка одобрена, событие MODERATED записано в outbox
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TicketResponse"
+        "403":
+          description: Карточка закреплена за другим модератором
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: FORBIDDEN
+                message: "This moderation card is not assigned to you"
+        "404":
+          description: Карточка не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: NOT_FOUND
+                message: "Ticket not found in moderation queue"
+        "409":
+          description: >
+            Конфликт состояния: карточка не в `IN_REVIEW` (например, продавец
+            отредактировал товар — статус сброшен в `PENDING`) или нет SKU.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                not_in_review:
+                  value:
+                    code: CONFLICT
+                    message: "Product is not in review status"
+                no_skus:
+                  value:
+                    code: CONFLICT
+                    message: "Product has no SKUs, cannot approve"
+
+  /tickets/{ticket_id}/block:
+    post:
+      summary: Заблокировать товар — soft или hard block (US-MOD-05)
+      description: >
+        Переводит тикет из `IN_REVIEW` в `BLOCKED` (мягкая блокировка) или
+        `HARD_BLOCKED` (жёсткая блокировка, терминальный статус).
+
+        Если хотя бы одна из переданных причин (`blocking_reason_ids`) имеет
+        `hard_block = true` — карточка переходит в `HARD_BLOCKED`, иначе —
+        в `BLOCKED`.
+
+        `HARD_BLOCKED` — терминальный статус: любая последующая попытка
+        изменить тикет (approve, block) вернёт `403 FORBIDDEN`. Снятие
+        блокировки возможно только через Django Admin (data-fix с audit log).
+
+        Публикует событие `BLOCKED` в outbox для B2B. Поле `hard_block: true`
+        сигнализирует B2B о каскаде в B2C (US-B2B-09). В той же транзакции
+        записывает `field_reports` на карточку для отображения продавцу.
+      operationId: blockTicket
+      tags:
+        - tickets
+      security:
+        - moderatorAuth: []
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Идентификатор карточки модерации (ticket.id)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlockRequest"
+      responses:
+        "200":
+          description: Тикет заблокирован, событие BLOCKED записано в outbox
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TicketResponse"
+        "403":
+          description: >
+            Нет доступа: тикет назначен другому модератору, или карточка
+            уже в терминальном статусе `HARD_BLOCKED`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                hard_blocked:
+                  value:
+                    code: FORBIDDEN
+                    message: "Hard-blocked product cannot be modified"
+                wrong_moderator:
+                  value:
+                    code: FORBIDDEN
+                    message: "This moderation card is not assigned to you"
+        "404":
+          description: Тикет или причина блокировки не найдена
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                ticket_not_found:
+                  value:
+                    code: NOT_FOUND
+                    message: "Ticket not found in moderation queue"
+                reason_not_found:
+                  value:
+                    code: NOT_FOUND
+                    message: "Blocking reason not found"
+        "409":
+          description: Тикет не в статусе IN_REVIEW
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: CONFLICT
+                message: "Product is not in review status"
+
 components:
   securitySchemes:
     serviceKeyAuth:
@@ -91,6 +257,13 @@ components:
       description: >
         Service-to-service ключ для вызовов от B2B. Не связан с
         аутентификацией пользователей (JWT).
+    moderatorAuth:
+      type: apiKey
+      in: header
+      name: X-Moderator-ID
+      description: >
+        Идентификатор модератора (UUID). Используется для проверки закрепления
+        карточки. В production заменяется bearerAuth (JWT).
 
   schemas:
     ErrorResponse:
@@ -166,6 +339,165 @@ components:
           format: date-time
         payload:
           $ref: "#/components/schemas/ProductEventPayload"
+
+    ApproveRequest:
+      type: object
+      properties:
+        comment:
+          type: string
+          nullable: true
+          maxLength: 1000
+          description: Необязательный комментарий модератора к решению
+
+    FieldReport:
+      type: object
+      required:
+        - field_path
+        - message
+      properties:
+        field_path:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Путь к полю с нарушением (например, `description`, `skus[0].price`)
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Описание нарушения для этого поля
+
+    BlockRequest:
+      type: object
+      required:
+        - blocking_reason_ids
+      properties:
+        blocking_reason_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+          description: >
+            Список UUID причин блокировки (минимум одна). Если хотя бы одна
+            причина имеет `hard_block = true`, карточка переходит в
+            `HARD_BLOCKED`.
+        comment:
+          type: string
+          nullable: true
+          maxLength: 1000
+          description: Необязательный комментарий модератора
+        field_reports:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldReport"
+          default: []
+          description: Список нарушений по конкретным полям товара
+
+    TicketKind:
+      type: string
+      enum:
+        - CREATE
+        - EDIT
+      description: >
+        Тип события, породившего карточку: `CREATE` — первичная публикация,
+        `EDIT` — правка существующего товара.
+
+    TicketStatus:
+      type: string
+      enum:
+        - PENDING
+        - IN_REVIEW
+        - APPROVED
+        - BLOCKED
+        - HARD_BLOCKED
+
+    TicketResponse:
+      type: object
+      required:
+        - id
+        - product_id
+        - seller_id
+        - kind
+        - status
+        - queue_priority
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Идентификатор карточки модерации (ticket_id)
+        product_id:
+          type: string
+          format: uuid
+        seller_id:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/TicketKind"
+        status:
+          $ref: "#/components/schemas/TicketStatus"
+        queue_priority:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    ModerationEventPayload:
+      type: object
+      required:
+        - idempotency_key
+        - product_id
+        - event_type
+        - hard_block
+        - field_reports
+        - occurred_at
+      description: >
+        Событие о решении модератора, публикуемое в outbox для B2B.
+        При `event_type: BLOCKED` и `hard_block: true` B2B инициирует
+        каскад в B2C (US-B2B-09).
+      properties:
+        idempotency_key:
+          type: string
+          format: uuid
+          description: UUID, генерируемый при approve/block; гарантирует идемпотентность в B2B
+        product_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum:
+            - MODERATED
+            - BLOCKED
+        hard_block:
+          type: boolean
+          description: >
+            `true` — жёсткая блокировка (`HARD_BLOCKED`). B2B инициирует
+            каскад в B2C. Только при `event_type: BLOCKED`.
+          default: false
+        blocking_reason_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: UUID первичной причины блокировки (только при `event_type: BLOCKED`)
+        blocking_reason_title:
+          type: string
+          nullable: true
+          description: Название причины блокировки (для трассируемости в B2B)
+        field_reports:
+          type: array
+          items:
+            type: object
+            properties:
+              field_name:
+                type: string
+                description: Имя поля (маппинг из `FieldReport.field_path`)
+              comment:
+                type: string
+                description: Описание нарушения (маппинг из `FieldReport.message`)
+          default: []
+        occurred_at:
+          type: string
+          format: date-time
 
     ProductEventResponse:
       type: object
