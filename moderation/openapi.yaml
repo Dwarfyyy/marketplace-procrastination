@@ -346,7 +346,7 @@ components:
         comment:
           type: string
           nullable: true
-          maxLength: 1000
+          maxLength: 2000
           description: Необязательный комментарий модератора к решению
 
     FieldReport:
@@ -358,7 +358,6 @@ components:
         field_path:
           type: string
           minLength: 1
-          maxLength: 255
           description: Путь к полю с нарушением (например, `description`, `skus[0].price`)
         message:
           type: string
@@ -384,7 +383,7 @@ components:
         comment:
           type: string
           nullable: true
-          maxLength: 1000
+          maxLength: 2000
           description: Необязательный комментарий модератора
         field_reports:
           type: array
