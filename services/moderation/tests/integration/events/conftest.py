@@ -3,7 +3,7 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.card import ModerationCard, ModerationCardStatus
+from database.models import ModerationStatus, ProductModeration
 
 PRODUCT_EVENT_SERVICE_KEY_HEADERS = {"X-Service-Key": "test-b2b-service-key"}
 
@@ -18,11 +18,11 @@ async def make_card(
 	*,
 	product_id: uuid.UUID,
 	seller_id: uuid.UUID,
-	status: ModerationCardStatus,
+	status: ModerationStatus,
 	json_before: dict | None = None,
 	json_after: dict | None = None,
-) -> ModerationCard:
-	card = ModerationCard(
+) -> ProductModeration:
+	card = ProductModeration(
 		product_id=product_id,
 		seller_id=seller_id,
 		status=status,

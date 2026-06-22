@@ -6,7 +6,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.card import ModerationCard, ModerationCardStatus
+from database.models import ModerationStatus, ProductModeration
 from tests.integration.events.conftest import (
 	PRODUCT_EVENT_SERVICE_KEY_HEADERS,
 	make_card,
@@ -43,10 +43,10 @@ async def _post(client: AsyncClient, body: dict) -> object:
 	)
 
 
-async def _reload_card(db: AsyncSession, product_id: uuid.UUID) -> ModerationCard:
+async def _reload_card(db: AsyncSession, product_id: uuid.UUID) -> ProductModeration:
 	result = await db.execute(
-		select(ModerationCard)
-		.where(ModerationCard.product_id == product_id)
+		select(ProductModeration)
+		.where(ProductModeration.product_id == product_id)
 		.execution_options(populate_existing=True)
 	)
 	return result.scalar_one()
@@ -70,7 +70,7 @@ async def test_created_pending(
 	assert body["status"] == "PENDING"
 
 	card = await _reload_card(db_session, product_id)
-	assert card.status == ModerationCardStatus.PENDING
+	assert card.status == ModerationStatus.PENDING
 	assert card.json_after == snapshot
 	assert card.json_before is None
 
@@ -87,7 +87,7 @@ async def test_edited_returns_to_review(
 		db_session,
 		product_id=product_id,
 		seller_id=seller_id,
-		status=ModerationCardStatus.MODERATED,
+		status=ModerationStatus.MODERATED,
 		json_after=old_snapshot,
 	)
 
@@ -101,7 +101,7 @@ async def test_edited_returns_to_review(
 	assert body["status"] == "PENDING"
 
 	card = await _reload_card(db_session, product_id)
-	assert card.status == ModerationCardStatus.PENDING
+	assert card.status == ModerationStatus.PENDING
 	assert card.json_after == new_snapshot
 	assert card.json_before == old_snapshot
 
@@ -118,7 +118,7 @@ async def test_edited_updates_in_review(
 		db_session,
 		product_id=product_id,
 		seller_id=seller_id,
-		status=ModerationCardStatus.IN_REVIEW,
+		status=ModerationStatus.IN_REVIEW,
 		json_after=old_snapshot,
 	)
 
@@ -132,7 +132,7 @@ async def test_edited_updates_in_review(
 	assert body["status"] == "IN_REVIEW"
 
 	card = await _reload_card(db_session, product_id)
-	assert card.status == ModerationCardStatus.IN_REVIEW
+	assert card.status == ModerationStatus.IN_REVIEW
 	assert card.json_after == new_snapshot
 	assert card.json_before is None
 
@@ -147,7 +147,7 @@ async def test_deleted_archived(
 		db_session,
 		product_id=product_id,
 		seller_id=seller_id,
-		status=ModerationCardStatus.IN_REVIEW,
+		status=ModerationStatus.IN_REVIEW,
 		json_after={"title": "Product"},
 	)
 
@@ -159,7 +159,7 @@ async def test_deleted_archived(
 	assert body["status"] == "ARCHIVED"
 
 	card = await _reload_card(db_session, product_id)
-	assert card.status == ModerationCardStatus.ARCHIVED
+	assert card.status == ModerationStatus.ARCHIVED
 
 
 async def test_duplicate_event_no_side_effects(
@@ -188,11 +188,11 @@ async def test_duplicate_event_no_side_effects(
 
 	# Only one card was created, and its status was not touched again.
 	result = await db_session.execute(
-		select(ModerationCard).where(ModerationCard.product_id == product_id)
+		select(ProductModeration).where(ProductModeration.product_id == product_id)
 	)
 	cards = result.scalars().all()
 	assert len(cards) == 1
-	assert cards[0].status == ModerationCardStatus.PENDING
+	assert cards[0].status == ModerationStatus.PENDING
 
 
 async def test_missing_service_header_401(
