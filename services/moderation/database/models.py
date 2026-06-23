@@ -72,3 +72,12 @@ class OutboxEvent(Base):
 	)
 	created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 	sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ProductEventProcessed(Base):
+	__tablename__ = "product_events_processed"
+
+	idempotency_key: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+	product_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+	event_type: Mapped[str] = mapped_column(String(32))
+	processed_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())

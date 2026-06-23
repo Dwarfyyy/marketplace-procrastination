@@ -1,4 +1,7 @@
 import os
+
+os.environ.setdefault("B2B_SERVICE_KEY", "test-b2b-service-key")
+
 from collections.abc import AsyncGenerator, AsyncIterator
 
 import pytest
@@ -14,8 +17,6 @@ from sqlalchemy.ext.asyncio import (
 from core import db as core_db
 from database.models import Base
 from main import app as moderation_app
-
-os.environ.setdefault("B2B_SERVICE_KEY", "test-b2b-service-key")
 
 
 @pytest.fixture()

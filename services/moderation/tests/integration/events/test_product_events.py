@@ -58,7 +58,7 @@ async def test_created_pending(
 	seller_id: uuid.UUID,
 ) -> None:
 	product_id = uuid.uuid4()
-	snapshot = {"title": "New product", "price": 1000}
+	snapshot = {"title": "New product", "price": 1000, "skus": []}
 
 	response = await _post(
 		client, _body("PRODUCT_CREATED", product_id, seller_id, json_after=snapshot)
@@ -81,8 +81,8 @@ async def test_edited_returns_to_review(
 	seller_id: uuid.UUID,
 ) -> None:
 	product_id = uuid.uuid4()
-	old_snapshot = {"title": "Old title", "price": 1000}
-	new_snapshot = {"title": "New title", "price": 1200}
+	old_snapshot = {"title": "Old title", "price": 1000, "skus": []}
+	new_snapshot = {"title": "New title", "price": 1200, "skus": []}
 	await make_card(
 		db_session,
 		product_id=product_id,
@@ -111,16 +111,24 @@ async def test_edited_updates_in_review(
 	db_session: AsyncSession,
 	seller_id: uuid.UUID,
 ) -> None:
+	# An edit arriving while the card is IN_REVIEW invalidates the
+	# in-flight review: the card goes back to PENDING and the assigned
+	# moderator is cleared, same as edits on MODERATED/BLOCKED cards.
+	# This is what tests/test_approval.py::test_approve_after_edited_returns_409
+	# relies on (approve must 409 once the underlying data changed).
 	product_id = uuid.uuid4()
-	old_snapshot = {"title": "Old title", "price": 1000}
-	new_snapshot = {"title": "Updated title", "price": 1100}
-	await make_card(
+	old_snapshot = {"title": "Old title", "price": 1000, "skus": []}
+	new_snapshot = {"title": "Updated title", "price": 1100, "skus": []}
+	moderator_id = uuid.uuid4()
+	card = await make_card(
 		db_session,
 		product_id=product_id,
 		seller_id=seller_id,
 		status=ModerationStatus.IN_REVIEW,
 		json_after=old_snapshot,
 	)
+	card.moderator_id = moderator_id
+	await db_session.commit()
 
 	response = await _post(
 		client, _body("PRODUCT_EDITED", product_id, seller_id, json_after=new_snapshot)
@@ -129,12 +137,13 @@ async def test_edited_updates_in_review(
 	assert response.status_code == 202
 	body = response.json()
 	assert body["processed"] is True
-	assert body["status"] == "IN_REVIEW"
+	assert body["status"] == "PENDING"
 
 	card = await _reload_card(db_session, product_id)
-	assert card.status == ModerationStatus.IN_REVIEW
+	assert card.status == ModerationStatus.PENDING
 	assert card.json_after == new_snapshot
-	assert card.json_before is None
+	assert card.json_before == old_snapshot
+	assert card.moderator_id is None
 
 
 async def test_deleted_archived(
@@ -142,6 +151,9 @@ async def test_deleted_archived(
 	db_session: AsyncSession,
 	seller_id: uuid.UUID,
 ) -> None:
+	# PRODUCT_DELETED removes the card from the moderation queue entirely
+	# rather than tombstoning it, matching the credited US-MOD-01 behavior
+	# (services/product_events.py: card row is deleted, not re-created).
 	product_id = uuid.uuid4()
 	await make_card(
 		db_session,
@@ -156,10 +168,11 @@ async def test_deleted_archived(
 	assert response.status_code == 202
 	body = response.json()
 	assert body["processed"] is True
-	assert body["status"] == "ARCHIVED"
 
-	card = await _reload_card(db_session, product_id)
-	assert card.status == ModerationStatus.ARCHIVED
+	result = await db_session.execute(
+		select(ProductModeration).where(ProductModeration.product_id == product_id)
+	)
+	assert result.scalar_one_or_none() is None
 
 
 async def test_duplicate_event_no_side_effects(

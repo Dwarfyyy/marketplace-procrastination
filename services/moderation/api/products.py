@@ -32,7 +32,7 @@ def _ticket_response(card: ProductModeration) -> TicketResponse:
 	)
 
 
-@router.post("/{ticket_id}/approve", response_model=TicketResponse)
+@router.post("/{ticket_id}/approve")
 async def approve(
 	ticket_id: UUID,
 	request: ApproveRequest,
@@ -43,7 +43,7 @@ async def approve(
 	return _ticket_response(card)
 
 
-@router.post("/{ticket_id}/block", response_model=TicketResponse)
+@router.post("/{ticket_id}/block")
 async def decline(
 	ticket_id: UUID,
 	request: DeclineRequest,
