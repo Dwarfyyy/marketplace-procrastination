@@ -1,93 +1,22 @@
-from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import crud.card as card_crud
 import crud.product_event as product_event_crud
-from database.models.card import ModerationCard, ModerationCardStatus
+from database.models import ModerationStatus, ProductModeration
 from schemas.product_event import ProductEventRequest, ProductEventResponse
-
-# Statuses from which an edit returns the card to the moderation queue.
-_REVIEWED_STATUSES = {ModerationCardStatus.MODERATED, ModerationCardStatus.BLOCKED}
+from services.product_events import apply_product_event
 
 
-def _apply_created(
-	db: AsyncSession, request: ProductEventRequest, card: ModerationCard | None
-) -> ModerationCard:
-	if card is None:
-		return card_crud.create_card(
-			db,
-			product_id=request.payload.product_id,
-			seller_id=request.payload.seller_id,
-			status=ModerationCardStatus.PENDING,
-			json_after=request.payload.json_after,
-		)
-	# Retried CREATED for a card that already exists: refresh the snapshot
-	# without disturbing the current moderation status.
-	card.json_after = request.payload.json_after
-	return card
-
-
-def _apply_edited(
-	db: AsyncSession, request: ProductEventRequest, card: ModerationCard | None
-) -> ModerationCard:
-	if card is None:
-		return card_crud.create_card(
-			db,
-			product_id=request.payload.product_id,
-			seller_id=request.payload.seller_id,
-			status=ModerationCardStatus.PENDING,
-			json_after=request.payload.json_after,
-		)
-
-	if card.status == ModerationCardStatus.HARD_BLOCKED:
-		# Hard-blocked listings reject seller edits; the event is acknowledged
-		# but does not change the card.
-		return card
-
-	if (
-		card.status in _REVIEWED_STATUSES
-		or card.status == ModerationCardStatus.ARCHIVED
-	):
-		card.json_before = card.json_after
-		card.json_after = request.payload.json_after
-		card.status = ModerationCardStatus.PENDING
-		return card
-
-	# PENDING / IN_REVIEW: update the fields under review in place.
-	card.json_after = request.payload.json_after
-	return card
-
-
-def _apply_deleted(
-	db: AsyncSession, request: ProductEventRequest, card: ModerationCard | None
-) -> ModerationCard:
-	if card is None:
-		return card_crud.create_card(
-			db,
-			product_id=request.payload.product_id,
-			seller_id=request.payload.seller_id,
-			status=ModerationCardStatus.ARCHIVED,
-			json_after=request.payload.json_after or None,
-		)
-
-	card.status = ModerationCardStatus.ARCHIVED
-	return card
-
-
-_HANDLERS = {
-	"PRODUCT_CREATED": _apply_created,
-	"PRODUCT_EDITED": _apply_edited,
-	"PRODUCT_DELETED": _apply_deleted,
-}
-
-
-async def apply_product_event(
+async def apply_product_event_with_idempotency(
 	db: AsyncSession, request: ProductEventRequest
 ) -> ProductEventResponse:
+	"""Apply product event with idempotency check."""
 	await product_event_crud.lock_idempotency_key(db, request.idempotency_key)
 
 	existing = await product_event_crud.get_processed_event(db, request.idempotency_key)
 	if existing is not None:
+		# Event already processed; return 409 via exception raised in API
+		from fastapi import HTTPException
 		raise HTTPException(
 			status_code=409,
 			detail={
@@ -96,17 +25,36 @@ async def apply_product_event(
 			},
 		)
 
-	card = await card_crud.lock_card_by_product(db, request.payload.product_id)
-	card = _HANDLERS[request.event_type](db, request, card)
+	# Build event dict for product_events function
+	event = {
+		"event_type": request.event_type,
+		"payload": {
+			"product_id": str(request.payload.product_id),
+			"seller_id": str(request.payload.seller_id),
+			"json_after": dict(request.payload.json_after),
+		},
+	}
 
+	# Apply the event
+	await apply_product_event(db, event)
+
+	# Record processed event for idempotency
 	product_event_crud.add_processed_event(
 		db, request.idempotency_key, request.payload.product_id, request.event_type
 	)
 	await db.commit()
-	await db.refresh(card)
+
+	# Fetch card to get final status
+	result = await db.execute(
+		select(ProductModeration).where(
+			ProductModeration.product_id == request.payload.product_id
+		)
+	)
+	card = result.scalar_one_or_none()
+
 	return ProductEventResponse(
 		idempotency_key=request.idempotency_key,
 		processed=True,
-		card_id=card.id,
-		status=card.status,
+		card_id=card.id if card else None,
+		status=card.status.value if card else None,
 	)
