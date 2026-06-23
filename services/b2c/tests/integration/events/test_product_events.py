@@ -77,7 +77,7 @@ async def test_product_blocked_marks_cart_items_unavailable(
 		_body("PRODUCT_BLOCKED", sku_ids, product_event_data.product.id),
 	)
 
-	assert response.status_code == 200
+	assert response.status_code == 202
 	body = response.json()
 	assert body["processed"] is True
 	assert body["updated_count"] == len(product_event_data.cart_items)
@@ -105,7 +105,7 @@ async def test_orders_not_affected_by_product_blocked(
 		client,
 		_body("PRODUCT_BLOCKED", sku_ids, product_event_data.product.id),
 	)
-	assert response.status_code == 200
+	assert response.status_code == 202
 
 	order_items = await _reload_order_items(
 		db_session, [item.id for item in product_event_data.order_items]
@@ -131,11 +131,11 @@ async def test_idempotent_event_no_side_effects(
 	first = await _post(client, body)
 	second = await _post(client, body)
 
-	assert first.status_code == 200
+	assert first.status_code == 202
 	assert first.json()["processed"] is True
 	assert first.json()["updated_count"] == len(product_event_data.cart_items)
 
-	assert second.status_code == 200
+	assert second.status_code == 202
 	assert second.json()["processed"] is False
 	assert second.json()["updated_count"] == 0
 
@@ -159,3 +159,68 @@ async def test_missing_service_key_returns_401(
 	assert response.status_code == 401
 	assert set(response.json()) == {"code", "message"}
 	assert response.json()["code"] == "UNAUTHORIZED"
+
+
+async def test_product_blocked_without_sku_ids_resolves_via_catalog(
+	client: AsyncClient,
+	product_event_data: ProductEventData,
+	db_session: AsyncSession,
+) -> None:
+	# Spec-compliant payload: product-level event carries only product_id.
+	response = await _post(
+		client,
+		_body("PRODUCT_BLOCKED", [], product_event_data.product.id),
+	)
+
+	assert response.status_code == 202
+	assert response.json()["processed"] is True
+	assert response.json()["updated_count"] == len(product_event_data.cart_items)
+
+	cart_items = await _reload_cart_items(
+		db_session, [item.id for item in product_event_data.cart_items]
+	)
+	for cart_item in cart_items:
+		assert cart_item.unavailable_reason == "PRODUCT_BLOCKED"
+
+
+async def test_sku_back_in_stock_clears_out_of_stock(
+	client: AsyncClient,
+	product_event_data: ProductEventData,
+	db_session: AsyncSession,
+) -> None:
+	sku_ids = [sku.id for sku in product_event_data.skus]
+	out = await _post(client, _body("SKU_OUT_OF_STOCK", sku_ids, product_event_data.product.id))
+	assert out.status_code == 202
+
+	back = await _post(
+		client, _body("SKU_BACK_IN_STOCK", sku_ids, product_event_data.product.id)
+	)
+	assert back.status_code == 202
+	assert back.json()["updated_count"] == len(product_event_data.cart_items)
+
+	cart_items = await _reload_cart_items(
+		db_session, [item.id for item in product_event_data.cart_items]
+	)
+	for cart_item in cart_items:
+		assert cart_item.unavailable_reason is None
+
+
+async def test_price_changed_does_not_change_cart_availability(
+	client: AsyncClient,
+	product_event_data: ProductEventData,
+	db_session: AsyncSession,
+) -> None:
+	sku_ids = [sku.id for sku in product_event_data.skus]
+	response = await _post(
+		client, _body("PRICE_CHANGED", sku_ids, product_event_data.product.id)
+	)
+
+	assert response.status_code == 202
+	assert response.json()["processed"] is True
+	assert response.json()["updated_count"] == 0
+
+	cart_items = await _reload_cart_items(
+		db_session, [item.id for item in product_event_data.cart_items]
+	)
+	for cart_item in cart_items:
+		assert cart_item.unavailable_reason is None

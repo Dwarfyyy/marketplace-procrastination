@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.db import get_db
 from schemas.product_event import ProductEventRequest, ProductEventResponse
-from services import product_event_service
+from services.product_events import apply_product_event
 
 router = APIRouter(prefix="/b2b/events", tags=["Product Events"])
 
@@ -15,4 +15,16 @@ async def receive_product_event(
 	request: ProductEventRequest,
 	db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProductEventResponse:
-	return await product_event_service.apply_product_event(db, request)
+	event = {
+		"event_type": request.event_type,
+		"payload": {
+			"product_id": str(request.payload.product_id),
+			"seller_id": str(request.payload.seller_id),
+			"json_after": dict(request.payload.json_after),
+		},
+	}
+	await apply_product_event(db, event)
+	return ProductEventResponse(
+		idempotency_key=request.idempotency_key,
+		processed=True,
+	)
