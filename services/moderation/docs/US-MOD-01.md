@@ -11,21 +11,23 @@ X-Service-Key: <B2B_SERVICE_KEY>
 
 Принимает `idempotency_key` (генерируется B2B), `occurred_at`, `event_type`
 (`PRODUCT_CREATED` / `PRODUCT_EDITED` / `PRODUCT_DELETED`) и
-`payload.{product_id, seller_id, json_before?, json_after}`.
+`payload.{product_id, seller_id, json_after}`.
 
-- `PRODUCT_CREATED` создаёт карточку `moderation.cards` в `PENDING` с
-  `json_after` из payload.
+- `PRODUCT_CREATED` создаёт карточку `product_moderation` в `PENDING` с
+  `json_after` из payload (приватные поля SKU — `cost_price`,
+  `reserved_quantity` — вырезаются).
 - `PRODUCT_EDITED`:
-  - `PENDING` / `IN_REVIEW` — обновляет `json_after` на месте, статус не
-    меняется.
-  - `MODERATED` / `BLOCKED` / `ARCHIVED` — возвращает карточку в `PENDING`,
-    копируя текущую `json_after` в `json_before` перед обновлением.
   - `HARD_BLOCKED` — карточка не изменяется (продавец не может редактировать
     hard-blocked товар).
+  - любой другой статус (`PENDING` / `IN_REVIEW` / `MODERATED` / `BLOCKED`) —
+    возвращает карточку в `PENDING`, копирует текущую `json_after` в
+    `json_before`, очищает `moderator_id`. Это инвалидирует любую
+    незавершённую проверку: если модератор уже взял карточку в работу
+    (`IN_REVIEW`) и продавец отредактировал товар, попытка `approve`/`block`
+    по старым данным получит `409 CONFLICT`.
   - карточки нет — создаёт её в `PENDING` (на случай потери `CREATED`).
-- `PRODUCT_DELETED` переводит карточку в `ARCHIVED` (уходит из очереди
-  модератора) из любого состояния; если карточки нет — создаёт её сразу в
-  `ARCHIVED`.
+- `PRODUCT_DELETED` удаляет карточку из очереди модерации полностью; если
+  карточки нет — событие принимается без побочных эффектов.
 
 **Ответы:**
 - `202 Accepted` — событие успешно обработано.
@@ -35,11 +37,13 @@ X-Service-Key: <B2B_SERVICE_KEY>
 
 ## Идемпотентность и транзакция
 
-Обработанные события сохраняются в `moderation.product_events_processed`
-(PK = `idempotency_key`, генерируется и присылается B2B). Транзакционный
-advisory-lock по `idempotency_key` сериализует параллельные доставки
-одинакового события. Блокировка карточки через `SELECT ... FOR UPDATE`,
-переход статуса и запись processed-event выполняются одной транзакцией.
+Обработанные события сохраняются в `product_events_processed`
+(PK = `idempotency_key`, генерируется и присылается B2B). На Postgres
+транзакционный advisory-lock (`pg_advisory_xact_lock`) по `idempotency_key`
+сериализует параллельные доставки одинакового события; на других диалектах
+(в частности SQLite в тестах) сериализация полагается на уникальность PK.
+Блокировка карточки через `SELECT ... FOR UPDATE`, переход статуса и запись
+processed-event выполняются в одной транзакции.
 
 ## Тесты
 

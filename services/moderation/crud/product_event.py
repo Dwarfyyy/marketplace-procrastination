@@ -3,10 +3,16 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.product_event import ProductEventProcessed
+from database.models import ProductEventProcessed
 
 
 async def lock_idempotency_key(db: AsyncSession, idempotency_key: uuid.UUID) -> None:
+	bind = db.get_bind()
+	if bind.dialect.name != "postgresql":
+		# Advisory locks are Postgres-specific; other dialects (e.g. the
+		# SQLite engine used in tests) rely on the unique constraint on
+		# product_events_processed.idempotency_key instead.
+		return
 	unsigned_key = idempotency_key.int & ((1 << 63) - 1)
 	await db.execute(select(func.pg_advisory_xact_lock(unsigned_key)))
 
